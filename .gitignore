@@ -1,0 +1,6 @@
+# IDE related ignore
+.vscode
+
+# Rust related ignore
+/target
+/Cargo.lock
