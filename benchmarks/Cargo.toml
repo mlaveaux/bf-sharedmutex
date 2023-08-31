@@ -1,0 +1,17 @@
+[package]
+name = "sharedmutex-benchmarks"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bf-sharedmutex = { path = "../bf-sharedmutex/" }
+criterion = { version = "0.5", features = ["html_reports"] }
+parking_lot = "0.12"
+rand = "0.8"
+tokio = { version = "1.32", features = ["full"] }
+
+[[bench]]
+name = "benchmarks"
+harness = false
