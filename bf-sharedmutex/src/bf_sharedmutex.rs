@@ -32,6 +32,7 @@ pub struct BfSharedMutex<T> {
 unsafe impl<T> Send for BfSharedMutex<T> {}
 
 /// The busy and forbidden flags used to 
+#[repr(align(64))]
 struct SharedMutexControl {
     busy: AtomicBool,
     forbidden: AtomicBool,
@@ -76,6 +77,15 @@ impl<T> Clone for BfSharedMutex<T> {
     }
 }
 
+impl<T> Drop for BfSharedMutex<T> {
+    fn drop(&mut self) {
+        let mut other = self.other.lock().expect("Failed to lock mutex");
+
+        // Remove ourselves from the table.
+        other[self.index] = None;
+    }
+}
+
 /// The guard object for exclusive access to the underlying object.
 pub struct BfSharedMutexWriteGuard<'a, T> {
     mutex: &'a BfSharedMutex<T>,
@@ -83,8 +93,19 @@ pub struct BfSharedMutexWriteGuard<'a, T> {
 }
 
 /// Allow dereferencing the underlying object.
+#[cfg(not(loom))]
 impl<'a, T> Deref for BfSharedMutexWriteGuard<'a, T> {
     type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        // We are the only guard after `write()`, so we can provide immutable access to the underlying object. (No mutable references the guard can exist)
+        unsafe { &*self.mutex.object.get() }
+    }
+}
+
+#[cfg(loom)]
+impl<'a, T> Deref for BfSharedMutexWriteGuard<'a, T> {
+    type Target = loom::ConstPtr;
 
     fn deref(&self) -> &Self::Target {
         // We are the only guard after `write()`, so we can provide immutable access to the underlying object. (No mutable references the guard can exist)
