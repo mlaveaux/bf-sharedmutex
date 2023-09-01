@@ -8,9 +8,15 @@ edition = "2021"
 [dependencies]
 bf-sharedmutex = { path = "../bf-sharedmutex/" }
 criterion = { version = "0.5", features = ["html_reports"] }
+pairlock = "0.1"
 parking_lot = "0.12"
+pflock = "0.2"
+#process-sync = "0.2"
 rand = "0.8"
-tokio = { version = "1.32", features = ["full"] }
+shared-mutex = "0.3"
+spin = "0.9"
+tokio = { version = "1.32", features = ["sync", "rt-multi-thread"] }
+widerwlock = "0.5"
 
 [[bench]]
 name = "benchmarks"
