@@ -90,6 +90,9 @@ impl<T> Drop for BfSharedMutex<T> {
 pub struct BfSharedMutexWriteGuard<'a, T> {
     mutex: &'a BfSharedMutex<T>,
     guard: MutexGuard<'a, Vec<Option<Arc<SharedMutexControl>>>>,
+
+    #[cfg(loom)]
+    access: loom::cell::MutPtr<T>,
 }
 
 /// Allow dereferencing the underlying object.
@@ -103,21 +106,29 @@ impl<'a, T> Deref for BfSharedMutexWriteGuard<'a, T> {
     }
 }
 
-#[cfg(loom)]
-impl<'a, T> Deref for BfSharedMutexWriteGuard<'a, T> {
-    type Target = loom::ConstPtr;
-
-    fn deref(&self) -> &Self::Target {
-        // We are the only guard after `write()`, so we can provide immutable access to the underlying object. (No mutable references the guard can exist)
-        unsafe { &*self.mutex.object.get() }
-    }
-}
-
+#[cfg(not(loom))]
 impl<'a, T> DerefMut for BfSharedMutexWriteGuard<'a, T> {
 
     fn deref_mut(&mut self) -> &mut Self::Target {
         // We are the only guard after `write()`, so we can provide mutable access to the underlying object.
         unsafe { &mut *self.mutex.object.get() }
+    }
+}
+
+#[cfg(loom)]
+impl<'a, T> Deref for BfSharedMutexWriteGuard<'a, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { self.access.deref() }
+    }
+}
+
+#[cfg(loom)]
+impl<'a, T> DerefMut for BfSharedMutexWriteGuard<'a, T> {
+
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { self.access.deref() }
     }
 }
 
@@ -133,15 +144,28 @@ impl<'a, T> Drop for BfSharedMutexWriteGuard<'a, T> {
 
 pub struct BfSharedMutexReadGuard<'a, T> {
     mutex: &'a BfSharedMutex<T>,
+
+    #[cfg(loom)]
+    access: loom::cell::ConstPtr<T>,
 }
 
 /// Allow dereferences the underlying object.
+#[cfg(not(loom))]
 impl<'a, T> Deref for BfSharedMutexReadGuard<'a, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
         // There can only be shared guards, which only provide immutable access to the object.
         unsafe { &*self.mutex.object.get() }
+    }
+}
+
+#[cfg(loom)]
+impl<'a, T> Deref for BfSharedMutexReadGuard<'a, T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { self.access.deref() }
     }
 }
 
@@ -156,6 +180,7 @@ impl<'a, T> Drop for BfSharedMutexReadGuard<'a, T> {
 impl<T> BfSharedMutex<T> {
 
     /// Provides read access to the underlying object, allowing multiple immutable references to it.
+    #[must_use]
     pub fn read<'a>(&'a self) -> Result<BfSharedMutexReadGuard<'a, T>, Box<dyn Error + 'a>> {
         debug_assert!(!self.control.busy.load(Ordering::SeqCst), "Cannot acquire read() access twice");
 
@@ -166,16 +191,25 @@ impl<T> BfSharedMutex<T> {
 
             // The mutex guard is dropped, but this is only for synchronisation purposes.
             let _unused = self.other.lock()?;
+            
             self.control.busy.store(true, Ordering::SeqCst);
         }
 
         // We now have immutable access to the object due to the protocol.
+        #[cfg(loom)]
+        return Ok(BfSharedMutexReadGuard {
+            mutex: self,
+            access: self.object.get(),
+        });
+
+        #[cfg(not(loom))]
         Ok(BfSharedMutexReadGuard {
             mutex: self,
         })
     }
 
     /// Provide write access to the underlying object, only a single mutable reference to the object exists.
+    #[must_use]
     pub fn write<'a>(&'a self) -> Result<BfSharedMutexWriteGuard<'a, T>, Box<dyn Error + 'a>> {
 
         let other = self.other.lock()?;
@@ -204,6 +238,14 @@ impl<T> BfSharedMutex<T> {
         }
 
         // We now have exclusive access to the object according to the protocol
+        #[cfg(loom)]
+        return Ok(BfSharedMutexWriteGuard {
+            mutex: self,
+            guard: other,
+            access: self.object.get_mut(),
+        });
+
+        #[cfg(not(loom))]
         Ok(BfSharedMutexWriteGuard {
             mutex: self,
             guard: other,
@@ -230,5 +272,117 @@ impl<T: Debug> Debug for BfSharedMutex<T> {
         }
 
         writeln!(f, "]")
+    }
+}
+
+
+#[cfg(test)]
+#[cfg(not(loom))]
+mod tests {
+    use std::{thread, hint::black_box};
+    use rand::prelude::*;
+
+    use crate::bf_sharedmutex::BfSharedMutex;
+
+    // These are just simple tests.
+    #[test]
+    fn test_exclusive() {
+        
+        let mut threads = vec![];
+
+        let shared_number = BfSharedMutex::new(5);
+        let iterations = 5000;
+
+        for _ in 1..iterations {
+            let shared_number = shared_number.clone();
+            threads.push(thread::spawn(move || {
+                *shared_number.write().unwrap() += 5;                
+            }));
+        }
+
+        // Check whether threads have completed succesfully.
+        for thread in threads {
+            thread.join().unwrap();
+        }
+
+        assert_eq!(*shared_number.write().unwrap(), iterations*5);
+    }
+
+    #[test]
+    fn test_shared() {
+        let shared_vector = BfSharedMutex::new(vec![]);
+
+        let mut threads = vec![];
+        for _ in 1..20 {
+            let shared_vector = shared_vector.clone();
+            threads.push(thread::spawn(move || {
+                let mut rng = rand::thread_rng();  
+
+                for _ in 0..100000 {
+                    if rng.gen_bool(0.95) {
+                        // Read a random index.
+                        let read = shared_vector.read().unwrap();
+                        if read.len() > 0 {
+                            let index = rng.gen_range(0..read.len());
+                            black_box(assert_eq!(read[index], 5));
+                        }
+                    } else {
+                        // Add a new vector element.
+                        shared_vector.write().unwrap().push(5);
+                    }
+                }
+             
+            }));
+        }
+
+        // Check whether threads have completed succesfully.
+        for thread in threads {
+            thread.join().unwrap();
+        }
+    }
+}
+
+#[cfg(test)]
+#[cfg(loom)]
+mod loom_tests{
+    use std::hint::black_box;
+    use rand::prelude::*;
+    
+    use loom::thread;
+    
+    use crate::bf_sharedmutex::BfSharedMutex;
+
+    // This is a forced interleaving test using Loom
+    #[test]
+    fn test_loom() {
+        loom::model(|| {
+            let shared_vector = BfSharedMutex::new(vec![]);
+
+            let mut threads = vec![];
+            for _ in 1..20 {
+                let shared_vector = shared_vector.clone();
+                threads.push(thread::spawn(move || {
+                    let mut rng = rand::thread_rng();  
+    
+                    for _ in 0..100 {
+                        // Read a random index.
+                        let read = shared_vector.read().unwrap();
+                        if read.len() > 0 {
+                            let index = rng.gen_range(0..read.len());
+                            black_box(assert_eq!(read[index], 5));
+                        }
+
+                        // Add a new vector element.
+                        shared_vector.write().unwrap().push(5);
+                    }
+                 
+                }));
+            }
+    
+            // Check whether threads have completed succesfully.
+            for thread in threads {
+                thread.join().unwrap();
+            }
+        });
     }
 }
