@@ -9,5 +9,6 @@ debug = true
 resolver = "2"
 members = [
     "bf-sharedmutex",
-    "benchmarks"
+    "benchmarks",
+    "xtask"
 ]
