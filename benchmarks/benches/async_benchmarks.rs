@@ -1,7 +1,7 @@
 use std::{hint::black_box, sync::Arc};
 
 // This is a struct that tells Criterion.rs to use the "futures" crate's current-thread executor
-use criterion::{Criterion};
+use criterion::Criterion;
 
 use rand::prelude::*;
 use tokio::runtime::Runtime;

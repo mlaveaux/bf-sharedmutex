@@ -1,358 +1,257 @@
-use std::{hint::black_box, thread, sync::{RwLock, Arc}};
+use std::{
+    hint::black_box,
+    sync::{atomic::AtomicBool, Arc, Barrier, RwLock},
+    thread::{self},
+};
 
 use criterion::Criterion;
 
-use rand::prelude::*;
 use bf_sharedmutex::BfSharedMutex;
-    
-pub fn benchmark_sharedmutexes(c: &mut Criterion) {
+use rand::prelude::*;
 
-    let read_percentage = 0.99;
-    let num_threads = 20;
-    let num_iterations = 100000;
+pub fn benchmark_lock<T, R, W>(
+    c: &mut Criterion,
+    name: &str,
+    shared: T,
+    read: R,
+    write: W,
+    num_threads: usize,
+    num_iterations: usize,
+    read_percentage: f64,
+) where
+    T: Clone + Send + 'static,
+    R: FnOnce(&T) -> () + Send + Copy + 'static,
+    W: FnOnce(&T) -> () + Send + Copy + 'static,
+{
+    // Share threads to avoid overhead.
+    let mut threads = vec![];
 
-    // This executes the same code sequentially for comparison of total time.
-    c.bench_function(&format!("sequential {} {} {}", num_threads, num_iterations, read_percentage), |bencher| {
+    #[derive(Clone)]
+    struct ThreadInfo<T> {
+        busy: Arc<AtomicBool>,
+        begin_barrier: Arc<Barrier>,
+        end_barrier: Arc<Barrier>,
+        shared: T,
+    }
 
-        bencher.iter(|| {        
-            let mut vector = vec![];
+    let info = ThreadInfo {
+        busy: Arc::new(AtomicBool::new(true)),
+        begin_barrier: Arc::new(Barrier::new(num_threads + 1)),
+        end_barrier: Arc::new(Barrier::new(num_threads + 1)),
+        shared,
+    };
 
-            for _ in 1..num_threads {
-                let mut rng = rand::thread_rng();  
+    for _ in 0..num_threads {
+        let info = info.clone();
+        threads.push(thread::spawn(move || {
+            let mut rng = rand::thread_rng();
 
+            loop {
+                info.begin_barrier.wait();
+
+                if !info.busy.load(std::sync::atomic::Ordering::SeqCst) {
+                    // Quit the thread.
+                    break;
+                }
+
+                // We execute it a fixed number of times, but also for every criterion iteration to avoid spawning and destroying threads.
                 for _ in 0..num_iterations {
                     if rng.gen_bool(read_percentage) {
                         // Read a random index.
-                        let read = &vector;
-                        if read.len() > 0 {
-                            let index = rng.gen_range(0..read.len());
-                            black_box(assert_eq!(read[index], 5));
-                        }
+                        black_box(read(&info.shared));
                     } else {
                         // Add a new vector element.
-                        vector.push(5);
+                        black_box(write(&info.shared));
                     }
-                };
+                }
+
+                info.end_barrier.wait();
             }
-        });
-    });
+        }));
+    }
 
-    c.bench_function(&format!("bf-sharedmutex::BfSharedMutex {} {} {}", num_threads, num_iterations, read_percentage), |bencher| {
+    c.bench_function(
+        format!(
+            "{} {} {} {}",
+            name, num_threads, num_iterations, read_percentage
+        )
+        .as_str(),
+        |bencher| {
+            bencher.iter(|| {
+                info.begin_barrier.wait();
 
-        bencher.iter(|| {  
-            let shared_vector = BfSharedMutex::new(vec![]);
+                info.end_barrier.wait();
+            });
+        },
+    );
 
-            let mut threads = vec![];
-            for _ in 1..num_threads {
-                let shared_vector = shared_vector.clone();
-                threads.push(thread::spawn(move || {
-                    let mut rng = rand::thread_rng();  
+    // Tell the threads to quit and wait for them to join.
+    info.busy.store(false, std::sync::atomic::Ordering::SeqCst);
+    info.begin_barrier.wait();
 
-                    for _ in 0..num_iterations {
-                        if rng.gen_bool(read_percentage) {
-                            // Read a random index.
-                            let read = shared_vector.read().unwrap();
-                            if read.len() > 0 {
-                                let index = rng.gen_range(0..read.len());
-                                black_box(assert_eq!(read[index], 5));
-                            }
-                        } else {
-                            // Add a new vector element.
-                            shared_vector.write().unwrap().push(5);
-                        }
-                    }
-                
-                }));
-            }
-
-            // Check whether threads have completed succesfully.
-            for thread in threads {
-                thread.join().unwrap();
-            }
-        });
-    });
-
-    c.bench_function(&format!("std::sync::RwLock {} {} {}", num_threads, num_iterations, read_percentage), |bencher| {
-        
-        bencher.iter(|| {  
-            let shared_vector = Arc::new(RwLock::new(vec![]));
-
-            let mut threads = vec![];
-            for _ in 1..num_threads {
-                let shared_vector = shared_vector.clone();
-                threads.push(thread::spawn(move || {
-                    let mut rng = rand::thread_rng();  
-
-                    for _ in 0..num_iterations {
-                        if rng.gen_bool(read_percentage) {
-                            // Read a random index.
-                            let read = shared_vector.read().unwrap();
-                            if read.len() > 0 {
-                                let index = rng.gen_range(0..read.len());
-                                black_box(assert_eq!(read[index], 5));
-                            }
-                        } else {
-                            // Add a new vector element.
-                            shared_vector.write().unwrap().push(5);
-                        }
-                    }
-                
-                }));
-            }
-
-            // Check whether threads have completed succesfully.
-            for thread in threads {
-                thread.join().unwrap();
-            }
-        })
-    });
-
-    c.bench_function(&format!("parking_lot::RwLock {} {} {}", num_threads, num_iterations, read_percentage), |bencher| {
-        
-        bencher.iter(|| {  
-            let shared_vector = Arc::new(parking_lot::RwLock::new(vec![]));
-
-            let mut threads = vec![];
-            for _ in 1..num_threads {
-                let shared_vector = shared_vector.clone();
-                threads.push(thread::spawn(move || {
-                    let mut rng = rand::thread_rng();  
-
-                    for _ in 0..num_iterations {
-                        if rng.gen_bool(read_percentage) {
-                            // Read a random index.
-                            let read = shared_vector.read();
-                            if read.len() > 0 {
-                                let index = rng.gen_range(0..read.len());
-                                black_box(assert_eq!(read[index], 5));
-                            }
-                        } else {
-                            // Add a new vector element.
-                            shared_vector.write().push(5);
-                        }
-                    }
-                
-                }));
-            }
-
-            // Check whether threads have completed succesfully.
-            for thread in threads {
-                thread.join().unwrap();
-            }
-        })
-    });
-
-    c.bench_function(&format!("spin::RwLock {} {} {}", num_threads, num_iterations, read_percentage), |bencher| {
-        
-        bencher.iter(|| {  
-            let shared_vector = Arc::new(spin::RwLock::new(vec![]));
-
-            let mut threads = vec![];
-            for _ in 1..num_threads {
-                let shared_vector = shared_vector.clone();
-                threads.push(thread::spawn(move || {
-                    let mut rng = rand::thread_rng();  
-
-                    for _ in 0..num_iterations {
-                        if rng.gen_bool(read_percentage) {
-                            // Read a random index.
-                            let read = shared_vector.read();
-                            if read.len() > 0 {
-                                let index = rng.gen_range(0..read.len());
-                                black_box(assert_eq!(read[index], 5));
-                            }
-                        } else {
-                            // Add a new vector element.
-                            shared_vector.write().push(5);
-                        }
-                    }
-                
-                }));
-            }
-
-            // Check whether threads have completed succesfully.
-            for thread in threads {
-                thread.join().unwrap();
-            }
-        })
-    });
-    
-    c.bench_function(&format!("widerwlock::WideRwLock {} {} {}", num_threads, num_iterations, read_percentage), |bencher| {
-        
-        bencher.iter(|| {  
-            let shared_vector = Arc::new(widerwlock::WideRwLock::new(vec![]));
-
-            let mut threads = vec![];
-            for _ in 1..num_threads {
-                let shared_vector = shared_vector.clone();
-                threads.push(thread::spawn(move || {
-                    let mut rng = rand::thread_rng();  
-
-                    for _ in 0..num_iterations {
-                        if rng.gen_bool(read_percentage) {
-                            // Read a random index.
-                            let read = shared_vector.read();
-                            if read.len() > 0 {
-                                let index = rng.gen_range(0..read.len());
-                                black_box(assert_eq!(read[index], 5));
-                            }
-                        } else {
-                            // Add a new vector element.
-                            shared_vector.write().push(5);
-                        }
-                    }
-                
-                }));
-            }
-
-            // Check whether threads have completed succesfully.
-            for thread in threads {
-                thread.join().unwrap();
-            }
-        })
-    });
-    
-    c.bench_function(&format!("shared_mutex::SharedMutex {} {} {}", num_threads, num_iterations, read_percentage), |bencher| {
-        
-        bencher.iter(|| {  
-            let shared_vector = Arc::new(shared_mutex::SharedMutex::new(vec![]));
-
-            let mut threads = vec![];
-            for _ in 1..num_threads {
-                let shared_vector = shared_vector.clone();
-                threads.push(thread::spawn(move || {
-                    let mut rng = rand::thread_rng();  
-
-                    for _ in 0..num_iterations {
-                        if rng.gen_bool(read_percentage) {
-                            // Read a random index.
-                            let read = shared_vector.read().unwrap();
-                            if read.len() > 0 {
-                                let index = rng.gen_range(0..read.len());
-                                black_box(assert_eq!(read[index], 5));
-                            }
-                        } else {
-                            // Add a new vector element.
-                            shared_vector.write().unwrap().push(5);
-                        }
-                    }
-                
-                }));
-            }
-
-            // Check whether threads have completed succesfully.
-            for thread in threads {
-                thread.join().unwrap();
-            }
-        })
-    });
-    
-    c.bench_function(&format!("pairlock::RwLock {} {} {}", num_threads, num_iterations, read_percentage), |bencher| {
-        
-        bencher.iter(|| {  
-            let shared_vector = Arc::new(pairlock::PairLock::with_default(vec![]));
-
-            let mut threads = vec![];
-            for _ in 1..num_threads {
-                let shared_vector = shared_vector.clone();
-                threads.push(thread::spawn(move || {
-                    let mut rng = rand::thread_rng();  
-
-                    for _ in 0..num_iterations {
-                        if rng.gen_bool(read_percentage) {
-                            // Read a random index.
-                            shared_vector.view(|read| {
-                                if read.len() > 0 {
-                                    let index = rng.gen_range(0..read.len());
-                                    black_box(assert_eq!(read[index], 5));
-                                }
-
-                            });
-                        } else {
-                            // Add a new vector element.
-                            shared_vector.update().push(5);
-                        }
-                    }
-                
-                }));
-            }
-
-            // Check whether threads have completed succesfully.
-            for thread in threads {
-                thread.join().unwrap();
-            }
-        })
-    });
-
-
-    c.bench_function(&format!("pflock::PFLock {} {} {}", num_threads, num_iterations, read_percentage), |bencher| {
-        
-        bencher.iter(|| {  
-            let shared_vector = Arc::new(pflock::PFLock::new(vec![]));
-
-            let mut threads = vec![];
-            for _ in 1..num_threads {
-                let shared_vector = shared_vector.clone();
-                threads.push(thread::spawn(move || {
-                    let mut rng = rand::thread_rng();  
-
-                    for _ in 0..num_iterations {
-                        if rng.gen_bool(read_percentage) {
-                            // Read a random index.
-                            let read = shared_vector.read();
-                            if read.len() > 0 {
-                                let index = rng.gen_range(0..read.len());
-                                black_box(assert_eq!(read[index], 5));
-                            }
-                        } else {
-                            // Add a new vector element.
-                            shared_vector.write().push(5);
-                        }
-                    }
-                
-                }));
-            }
-
-            // Check whether threads have completed succesfully.
-            for thread in threads {
-                thread.join().unwrap();
-            }
-        })
-    });
-
-    // c.bench_function(&format!("process_sync::SharedMemoryObject {} {} {}", num_threads, num_iterations, read_percentage), |bencher| {
-        
-    //     bencher.iter(|| {  
-    //         let shared_vector = Arc::new(process_sync::SharedMemoryObject::new(vec![]));
-
-    //         let mut threads = vec![];
-    //         for _ in 1..num_threads {
-    //             let shared_vector = shared_vector.clone();
-    //             threads.push(thread::spawn(move || {
-    //                 let mut rng = rand::thread_rng();  
-
-    //                 for _ in 0..num_iterations {
-    //                     if rng.gen_bool(read_percentage) {
-    //                         // Read a random index.
-    //                         let read = shared_vector.get().unwrap();
-    //                         if read.len() > 0 {
-    //                             let index = rng.gen_range(0..read.len());
-    //                             black_box(assert_eq!(read[index], 5));
-    //                         }
-    //                     } else {
-    //                         // Add a new vector element.
-    //                         shared_vector.get_mut().push(5);
-    //                     }
-    //                 }
-                
-    //             }));
-    //         }
-
-    //         // Check whether threads have completed succesfully.
-    //         for thread in threads {
-    //             thread.join().unwrap();
-    //         }
-    //     })
-    // });
-
+    for thread in threads {
+        thread.join().unwrap();
+    }
 }
+
+pub fn benchmark_sharedmutexes(c: &mut Criterion) {
+    let num_iterations = 100000;
+
+    let num_threads = 20;
+
+    //for num_threads in [1, 2, 4, 8, 16, 32] {
+        for read_ratio in [10, 100, 1000, 10000, 100000] {
+            // Derive the read percentage.
+            let read_percentage = 1.0 - 1.0 / read_ratio as f64;
+
+            // Benchmark various configurations.
+            benchmark_lock(
+                c,
+                "bf-sharedmutex::BfSharedMutex",
+                BfSharedMutex::new(()),
+                |shared| {
+                    shared.read().unwrap();
+                },
+                |shared| {
+                    shared.write().unwrap();
+                },
+                num_threads,
+                num_iterations,
+                read_percentage,
+            );
+
+            benchmark_lock(
+                c,
+                "std::sync::RwLock",
+                Arc::new(RwLock::new(())),
+                |shared| {
+                    let _guard = shared.read().unwrap();
+                },
+                |shared| {
+                    let _guard = shared.write().unwrap();
+                },
+                num_threads,
+                num_iterations,
+                read_percentage,
+            );
+
+            benchmark_lock(
+                c,
+                "parking_lot::RwLock",
+                Arc::new(parking_lot::RwLock::new(())),
+                |shared| {
+                    let _guard = shared.read();
+                },
+                |shared| {
+                    let _guard = shared.write();
+                },
+                num_threads,
+                num_iterations,
+                read_percentage,
+            );
+
+            benchmark_lock(
+                c,
+                "spin::RwLock",
+                Arc::new(spin::RwLock::new(())),
+                |shared| {
+                    shared.read();
+                },
+                |shared| {
+                    shared.write();
+                },
+                num_threads,
+                num_iterations,
+                read_percentage,
+            );
+
+            benchmark_lock(
+                c,
+                "widerwlock::WideRwLock",
+                Arc::new(widerwlock::WideRwLock::new(())),
+                |shared| {
+                    shared.read();
+                },
+                |shared| {
+                    shared.write();
+                },
+                num_threads,
+                num_iterations,
+                read_percentage,
+            );
+
+            benchmark_lock(
+                c,
+                "shared_mutex::SharedMutex",
+                Arc::new(shared_mutex::SharedMutex::new(())),
+                |shared| {
+                    let _guard = shared.read();
+                },
+                |shared| {
+                    let _guard = shared.write();
+                },
+                num_threads,
+                num_iterations,
+                read_percentage,
+            );
+
+            benchmark_lock(
+                c,
+                "pairlock::RwLock",
+                Arc::new(pairlock::PairLock::with_default(())),
+                |shared| {
+                    shared.view(|_| {});
+                },
+                |shared| {
+                    shared.update();
+                },
+                num_threads,
+                num_iterations,
+                read_percentage,
+            );
+
+            benchmark_lock(
+                c,
+                "pflock::PFLock",
+                Arc::new(pflock::PFLock::new(())),
+                |shared| {
+                    let _guard = shared.read();
+                },
+                |shared| {
+                    let _guard = shared.write();
+                },
+                num_threads,
+                num_iterations,
+                read_percentage,
+            );
+
+            benchmark_lock(
+                c,
+                "crossbeam::ShardedLock",
+                Arc::new(crossbeam::sync::ShardedLock::new(())),
+                |shared| {
+                    let _guard = shared.read().unwrap();
+                },
+                |shared| {
+                    let _guard = shared.write().unwrap();
+                },
+                num_threads,
+                num_iterations,
+                read_percentage,
+            );
+
+            // This library only works on linux.
+            #[cfg(target_os = "linux")]
+            benchmark_lock(c,
+                "process_sync::SharedMemoryObject",
+                Arc::new(process_sync::SharedMemoryObject::new(())),
+                |shared| {
+                    shared.get().unwrap();
+                }, |shared| {
+                    shared.get_mut();
+                },
+                num_threads,
+                num_iterations,
+                read_percentage);
+        }
+    }
