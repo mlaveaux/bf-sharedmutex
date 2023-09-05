@@ -1,5 +1,5 @@
 use std::{
-    sync::{atomic::{AtomicBool, Ordering, fence}, Arc}, ops::{DerefMut, Deref}, fmt::Debug, error::Error,
+    sync::{atomic::{AtomicBool, Ordering}, Arc, Condvar}, ops::{DerefMut, Deref}, fmt::Debug, error::Error,
 };
 
 #[cfg(not(loom))]
@@ -18,40 +18,45 @@ pub struct BfSharedMutex<T> {
     /// The local control bits of each instance. TODO: Maybe use pin to share the control bits among shared mutexes.
     control: Arc<SharedMutexControl>,
 
-    /// The object that is being protected.
-    object: Arc<UnsafeCell<T>>,
-
     /// Index into the `other` table.
     index: usize,
 
-    /// The list of all the shared mutex instances.
-    other: Arc<Mutex<Vec<Option<Arc<SharedMutexControl>>>>>,
+    /// Information shared between all clones.
+    shared: Arc<SharedData<T>>,
 }
 
 // Can only be send, but is not sync
 unsafe impl<T> Send for BfSharedMutex<T> {}
 
-/// The busy and forbidden flags used to 
-#[repr(align(64))]
+/// The busy and forbidden flags used to implement the protocol.
+#[derive(Default)]
 struct SharedMutexControl {
     busy: AtomicBool,
     forbidden: AtomicBool,
+}
+
+struct SharedData<T> {
+
+    /// The object that is being protected.
+    object: UnsafeCell<T>,
+
+    /// The list of all the shared mutex instances.
+    other: Mutex<Vec<Option<Arc<SharedMutexControl>>>>,
 }
 
 impl<T> BfSharedMutex<T> {
 
     /// Constructs a new shared mutex for protecting access to the given object.
     pub fn new(object: T) -> Self {
-        let control = Arc::new(SharedMutexControl {
-            busy: false.into(),
-            forbidden: false.into(),
-        });
+        let control = Arc::new(SharedMutexControl::default());
 
         Self {
             control: control.clone(),
-            object: Arc::new(UnsafeCell::new(object)),
+            shared: Arc::new(SharedData {
+                object: UnsafeCell::new(object),
+                other: Mutex::new(vec![Some(control.clone())]),
+            }),
             index: 0,
-            other: Arc::new(Mutex::new(vec![Some(control.clone())])),
         }
     }
 }
@@ -60,26 +65,22 @@ impl<T> Clone for BfSharedMutex<T> {
     fn clone(&self) -> Self {
 
         // Register a new instance in the other list.
-        let control = Arc::new(SharedMutexControl {
-            busy: false.into(),
-            forbidden: false.into(),
-        });
+        let control = Arc::new(SharedMutexControl::default());
 
-        let mut other = self.other.lock().expect("Failed to lock mutex");
+        let mut other = self.shared.other.lock().expect("Failed to lock mutex");
         other.push(Some(control.clone()));
 
         Self {
             control,
             index: other.len() - 1,
-            object: self.object.clone(),
-            other: self.other.clone(),
+            shared: self.shared.clone(),
         }
     }
 }
 
 impl<T> Drop for BfSharedMutex<T> {
     fn drop(&mut self) {
-        let mut other = self.other.lock().expect("Failed to lock mutex");
+        let mut other = self.shared.other.lock().expect("Failed to lock mutex");
 
         // Remove ourselves from the table.
         other[self.index] = None;
@@ -103,7 +104,7 @@ impl<'a, T> Deref for BfSharedMutexWriteGuard<'a, T> {
 
     fn deref(&self) -> &Self::Target {
         // We are the only guard after `write()`, so we can provide immutable access to the underlying object. (No mutable references the guard can exist)
-        unsafe { &*self.mutex.object.get() }
+        unsafe { &*self.mutex.shared.object.get() }
     }
 }
 
@@ -112,7 +113,7 @@ impl<'a, T> DerefMut for BfSharedMutexWriteGuard<'a, T> {
 
     fn deref_mut(&mut self) -> &mut Self::Target {
         // We are the only guard after `write()`, so we can provide mutable access to the underlying object.
-        unsafe { &mut *self.mutex.object.get() }
+        unsafe { &mut *self.mutex.shared.object.get() }
     }
 }
 
@@ -136,7 +137,7 @@ impl<'a, T> DerefMut for BfSharedMutexWriteGuard<'a, T> {
 impl<'a, T> Drop for BfSharedMutexWriteGuard<'a, T> {
     fn drop(&mut self) {
 
-        // Allow other threads to acquire access to the shared mutex.        
+        // Allow other threads to acquire access to the shared mutex.
         for control in self.guard.iter().flatten() {
             control.forbidden.store(false, std::sync::atomic::Ordering::SeqCst);
         }
@@ -157,7 +158,7 @@ impl<'a, T> Deref for BfSharedMutexReadGuard<'a, T> {
 
     fn deref(&self) -> &Self::Target {
         // There can only be shared guards, which only provide immutable access to the object.
-        unsafe { &*self.mutex.object.get() }
+        unsafe { &*self.mutex.shared.object.get() }
     }
 }
 
@@ -182,18 +183,13 @@ impl<T> BfSharedMutex<T> {
 
     /// Provides read access to the underlying object, allowing multiple immutable references to it.
     #[must_use]
+    #[inline]
     pub fn read<'a>(&'a self) -> Result<BfSharedMutexReadGuard<'a, T>, Box<dyn Error + 'a>> {
         debug_assert!(!self.control.busy.load(Ordering::SeqCst), "Cannot acquire read() access twice");
 
         self.control.busy.store(true, Ordering::SeqCst);
-
         while self.control.forbidden.load(Ordering::SeqCst) {
-            self.control.busy.store(false, Ordering::SeqCst);
-
-            // The mutex guard is dropped, but this is only for synchronisation purposes.
-            let _unused = self.other.lock()?;
-            
-            self.control.busy.store(true, Ordering::SeqCst);
+            self.wait_for_forbidden()?;
         }
 
         // We now have immutable access to the object due to the protocol.
@@ -211,18 +207,19 @@ impl<T> BfSharedMutex<T> {
 
     /// Provide write access to the underlying object, only a single mutable reference to the object exists.
     #[must_use]
+    #[inline]
     pub fn write<'a>(&'a self) -> Result<BfSharedMutexWriteGuard<'a, T>, Box<dyn Error + 'a>> {
 
-        let other = self.other.lock()?;
+        let other = self.shared.other.lock()?;
 
-        debug_assert!(!self.control.busy.load(std::sync::atomic::Ordering::Relaxed), 
+        debug_assert!(!self.control.busy.load(std::sync::atomic::Ordering::SeqCst), 
             "Can only exclusive lock outside of a shared lock, no upgrading!");
-        debug_assert!(!self.control.forbidden.load(std::sync::atomic::Ordering::Relaxed), 
+        debug_assert!(!self.control.forbidden.load(std::sync::atomic::Ordering::SeqCst), 
             "Can not acquire exclusive lock inside of exclusive section");
 
         // Make all instances wait due to forbidden access.
         for control in other.iter().flatten() {
-            debug_assert!(!control.forbidden.load(std::sync::atomic::Ordering::Relaxed), 
+            debug_assert!(!control.forbidden.load(std::sync::atomic::Ordering::SeqCst), 
                 "Other instance is already forbidden, this cannot happen");
 
             control.forbidden.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -252,6 +249,19 @@ impl<T> BfSharedMutex<T> {
             guard: other,
         })
     }
+
+    /// Wait for the forbidden flag to become false.
+    fn wait_for_forbidden<'a>(&'a self) -> Result<(), Box<dyn Error + 'a>> {
+            
+        self.control.busy.store(false, Ordering::SeqCst);
+
+        // Wait for the mutex of the writer.
+        let mut _guard = self.shared.other.lock()?;
+        
+        self.control.busy.store(true, Ordering::SeqCst);
+
+        Ok(())
+    }
 }
 
 impl<T: Debug> Debug for BfSharedMutex<T> {
@@ -260,12 +270,12 @@ impl<T: Debug> Debug for BfSharedMutex<T> {
         f.debug_map().entry(&"busy", &self.control.busy.load(Ordering::Relaxed))
         .entry(&"forbidden", &self.control.forbidden.load(Ordering::Relaxed))
         .entry(&"index", &self.index)
-        .entry(&"len(other)", &self.other.lock().unwrap().len())
+        .entry(&"len(other)", &self.shared.other.lock().unwrap().len())
         .finish()?;
 
         writeln!(f)?;
         writeln!(f, "other values: [")?;
-        for control in self.other.lock().unwrap().iter().flatten() {
+        for control in self.shared.other.lock().unwrap().iter().flatten() {
             f.debug_map().entry(&"busy", &control.busy.load(Ordering::Relaxed))
             .entry(&"forbidden", &control.forbidden.load(Ordering::Relaxed))
             .finish()?;
@@ -347,7 +357,6 @@ mod tests {
 #[cfg(loom)]
 mod loom_tests{
     use std::hint::black_box;
-    use rand::prelude::*;
     
     use loom::thread;
     
@@ -363,18 +372,15 @@ mod loom_tests{
             for _ in 1..3 {
                 let shared_vector = shared_vector.clone();
                 threads.push(thread::spawn(move || {    
-                    for _ in 0..1 {
-                        {
-                            // Read a random index.
-                            let _guard = black_box(shared_vector.read().unwrap());
+                    {
+                        // Read a random index.
+                        let _guard = black_box(shared_vector.read().unwrap());
 
-                            // Drop the read guard.
-                        }
-
-                        // Add a new vector element.
-                        let _guard = black_box(shared_vector.write().unwrap());
+                        // Drop the read guard.
                     }
-                 
+
+                    // Add a new vector element.
+                    let _guard = black_box(shared_vector.write().unwrap());                 
                 }));
             }
     

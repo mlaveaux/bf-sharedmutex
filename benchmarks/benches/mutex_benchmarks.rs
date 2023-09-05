@@ -17,7 +17,7 @@ pub fn benchmark_lock<T, R, W>(
     write: W,
     num_threads: usize,
     num_iterations: usize,
-    read_percentage: f64,
+    read_ratio: usize,
 ) where
     T: Clone + Send + 'static,
     R: FnOnce(&T) -> () + Send + Copy + 'static,
@@ -25,6 +25,9 @@ pub fn benchmark_lock<T, R, W>(
 {
     // Share threads to avoid overhead.
     let mut threads = vec![];
+
+    // Derive the read percentage.
+    let read_percentage = 1.0 - 1.0 / read_ratio as f64;
 
     #[derive(Clone)]
     struct ThreadInfo<T> {
@@ -73,7 +76,7 @@ pub fn benchmark_lock<T, R, W>(
     c.bench_function(
         format!(
             "{} {} {} {}",
-            name, num_threads, num_iterations, read_percentage
+            name, num_threads, num_iterations, read_ratio
         )
         .as_str(),
         |bencher| {
@@ -97,12 +100,8 @@ pub fn benchmark_lock<T, R, W>(
 pub fn benchmark_sharedmutexes(c: &mut Criterion) {
     let num_iterations = 100000;
 
-    let num_threads = 20;
-
-    //for num_threads in [1, 2, 4, 8, 16, 32] {
+    for num_threads in [1, 2, 4, 8, 16, 20] {
         for read_ratio in [10, 100, 1000, 10000, 100000] {
-            // Derive the read percentage.
-            let read_percentage = 1.0 - 1.0 / read_ratio as f64;
 
             // Benchmark various configurations.
             benchmark_lock(
@@ -110,15 +109,17 @@ pub fn benchmark_sharedmutexes(c: &mut Criterion) {
                 "bf-sharedmutex::BfSharedMutex",
                 BfSharedMutex::new(()),
                 |shared| {
-                    shared.read().unwrap();
+                    let _guard = shared.read().unwrap();
                 },
                 |shared| {
-                    shared.write().unwrap();
+                    let _guard = shared.write().unwrap();
                 },
                 num_threads,
                 num_iterations,
-                read_percentage,
+                read_ratio,
             );
+
+            continue;
 
             benchmark_lock(
                 c,
@@ -132,7 +133,7 @@ pub fn benchmark_sharedmutexes(c: &mut Criterion) {
                 },
                 num_threads,
                 num_iterations,
-                read_percentage,
+                read_ratio,
             );
 
             benchmark_lock(
@@ -147,7 +148,7 @@ pub fn benchmark_sharedmutexes(c: &mut Criterion) {
                 },
                 num_threads,
                 num_iterations,
-                read_percentage,
+                read_ratio,
             );
 
             benchmark_lock(
@@ -162,7 +163,7 @@ pub fn benchmark_sharedmutexes(c: &mut Criterion) {
                 },
                 num_threads,
                 num_iterations,
-                read_percentage,
+                read_ratio,
             );
 
             benchmark_lock(
@@ -177,7 +178,7 @@ pub fn benchmark_sharedmutexes(c: &mut Criterion) {
                 },
                 num_threads,
                 num_iterations,
-                read_percentage,
+                read_ratio,
             );
 
             benchmark_lock(
@@ -192,7 +193,7 @@ pub fn benchmark_sharedmutexes(c: &mut Criterion) {
                 },
                 num_threads,
                 num_iterations,
-                read_percentage,
+                read_ratio,
             );
 
             benchmark_lock(
@@ -207,7 +208,7 @@ pub fn benchmark_sharedmutexes(c: &mut Criterion) {
                 },
                 num_threads,
                 num_iterations,
-                read_percentage,
+                read_ratio,
             );
 
             benchmark_lock(
@@ -222,7 +223,7 @@ pub fn benchmark_sharedmutexes(c: &mut Criterion) {
                 },
                 num_threads,
                 num_iterations,
-                read_percentage,
+                read_ratio,
             );
 
             benchmark_lock(
@@ -237,7 +238,7 @@ pub fn benchmark_sharedmutexes(c: &mut Criterion) {
                 },
                 num_threads,
                 num_iterations,
-                read_percentage,
+                read_ratio,
             );
 
             // This library only works on linux.
@@ -252,6 +253,7 @@ pub fn benchmark_sharedmutexes(c: &mut Criterion) {
                 },
                 num_threads,
                 num_iterations,
-                read_percentage);
+                read_ratio);
         }
     }
+}
