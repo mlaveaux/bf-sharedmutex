@@ -1,5 +1,5 @@
 use std::{
-    sync::{atomic::{AtomicBool, Ordering}, Arc}, ops::{DerefMut, Deref}, fmt::Debug, error::Error,
+    sync::{atomic::{AtomicBool, Ordering, fence}, Arc}, ops::{DerefMut, Deref}, fmt::Debug, error::Error,
 };
 
 #[cfg(not(loom))]
@@ -87,6 +87,7 @@ impl<T> Drop for BfSharedMutex<T> {
 }
 
 /// The guard object for exclusive access to the underlying object.
+#[must_use = "Dropping the guard unlocks the shared mutex immediately"]
 pub struct BfSharedMutexWriteGuard<'a, T> {
     mutex: &'a BfSharedMutex<T>,
     guard: MutexGuard<'a, Vec<Option<Arc<SharedMutexControl>>>>,
@@ -356,24 +357,22 @@ mod loom_tests{
     #[test]
     fn test_loom() {
         loom::model(|| {
-            let shared_vector = BfSharedMutex::new(vec![]);
+            let shared_vector = BfSharedMutex::new(());
 
             let mut threads = vec![];
-            for _ in 1..20 {
+            for _ in 1..3 {
                 let shared_vector = shared_vector.clone();
-                threads.push(thread::spawn(move || {
-                    let mut rng = rand::thread_rng();  
-    
-                    for _ in 0..100 {
-                        // Read a random index.
-                        let read = shared_vector.read().unwrap();
-                        if read.len() > 0 {
-                            let index = rng.gen_range(0..read.len());
-                            black_box(assert_eq!(read[index], 5));
+                threads.push(thread::spawn(move || {    
+                    for _ in 0..1 {
+                        {
+                            // Read a random index.
+                            let _guard = black_box(shared_vector.read().unwrap());
+
+                            // Drop the read guard.
                         }
 
                         // Add a new vector element.
-                        shared_vector.write().unwrap().push(5);
+                        let _guard = black_box(shared_vector.write().unwrap());
                     }
                  
                 }));

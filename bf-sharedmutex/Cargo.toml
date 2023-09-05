@@ -14,4 +14,4 @@ loom = []
 rand = "0.8.5"
 
 [target.'cfg(loom)'.dependencies]
-loom = "0.7"
+loom = { version = "0.7", features = ["checkpoint"] }
