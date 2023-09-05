@@ -21,10 +21,21 @@ We compare several different Rust implementations of readers-writer locks.
 # Concurrency testing
 
 Using the crate `loom` it is actually possible to test all possible
-interleavings defined by the C11 memory standard to test the shared lock.
+interleavings defined by the C11 memory standard to show that the shared mutex is data race free.
+This can be used as follows:
 
 ```
 RUSTFLAGS="--cfg loom" cargo test
+```
+
+If a violation is detected the following command can be used to show the exact trace and source code locations of read and write accesses.
+
+```
+LOOM_LOG=trace \
+LOOM_LOCATION=1 \
+LOOM_CHECKPOINT_INTERVAL=1 \
+RUSTFLAGS="--cfg loom" \
+cargo test --test <test_name> --release
 ```
 
 # Related work
