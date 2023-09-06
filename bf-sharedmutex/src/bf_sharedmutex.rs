@@ -182,7 +182,6 @@ impl<'a, T> Drop for BfSharedMutexReadGuard<'a, T> {
 impl<T> BfSharedMutex<T> {
 
     /// Provides read access to the underlying object, allowing multiple immutable references to it.
-    #[must_use]
     #[inline]
     pub fn read<'a>(&'a self) -> Result<BfSharedMutexReadGuard<'a, T>, Box<dyn Error + 'a>> {
         debug_assert!(!self.control.busy.load(Ordering::SeqCst), "Cannot acquire read access again inside a reader section");
@@ -202,7 +201,7 @@ impl<T> BfSharedMutex<T> {
         #[cfg(loom)]
         return Ok(BfSharedMutexReadGuard {
             mutex: self,
-            access: self.object.get(),
+            access: self.shared.object.get(),
         });
 
         #[cfg(not(loom))]
@@ -212,7 +211,6 @@ impl<T> BfSharedMutex<T> {
     }
 
     /// Provide write access to the underlying object, only a single mutable reference to the object exists.
-    #[must_use]
     #[inline]
     pub fn write<'a>(&'a self) -> Result<BfSharedMutexWriteGuard<'a, T>, Box<dyn Error + 'a>> {
 
@@ -246,7 +244,7 @@ impl<T> BfSharedMutex<T> {
         return Ok(BfSharedMutexWriteGuard {
             mutex: self,
             guard: other,
-            access: self.object.get_mut(),
+            access: self.shared.object.get_mut(),
         });
 
         #[cfg(not(loom))]

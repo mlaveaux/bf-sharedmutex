@@ -97,11 +97,15 @@ pub fn benchmark_lock<T, R, W>(
     }
 }
 
-pub fn benchmark_sharedmutexes(c: &mut Criterion) {
-    let num_iterations = 100000;
+// Settings for the benchmarks.
+const NUM_ITERATIONS: usize = 100000;
+const THREADS: [usize; 6] = [1, 2, 4, 8, 16, 20];
+const READ_RATIOS: [usize; 5] = [10, 100, 1000, 10000, 100000];
 
-    for num_threads in [1, 2, 4, 8, 16, 20] {
-        for read_ratio in [10, 100, 1000, 10000, 100000] {
+/// Benchmark the bfsharedmutex implementation
+pub fn benchmark_bfsharedmutex(c: &mut Criterion) {
+    for num_threads in THREADS {
+        for read_ratio in READ_RATIOS {
 
             // Benchmark various configurations.
             benchmark_lock(
@@ -115,10 +119,17 @@ pub fn benchmark_sharedmutexes(c: &mut Criterion) {
                     let _guard = shared.write().unwrap();
                 },
                 num_threads,
-                num_iterations,
+                NUM_ITERATIONS,
                 read_ratio,
             );
+        }
+    }
+}
 
+// Split up to first do our own benchmarks since than we can update the implementation easily.   
+pub fn benchmark_othermutexes(c: &mut Criterion) {
+    for num_threads in THREADS {
+        for read_ratio in READ_RATIOS {
             benchmark_lock(
                 c,
                 "std::sync::RwLock",
@@ -130,7 +141,7 @@ pub fn benchmark_sharedmutexes(c: &mut Criterion) {
                     let _guard = shared.write().unwrap();
                 },
                 num_threads,
-                num_iterations,
+                NUM_ITERATIONS,
                 read_ratio,
             );
 
@@ -145,7 +156,7 @@ pub fn benchmark_sharedmutexes(c: &mut Criterion) {
                     let _guard = shared.write();
                 },
                 num_threads,
-                num_iterations,
+                NUM_ITERATIONS,
                 read_ratio,
             );
 
@@ -160,11 +171,11 @@ pub fn benchmark_sharedmutexes(c: &mut Criterion) {
                     shared.write();
                 },
                 num_threads,
-                num_iterations,
+                NUM_ITERATIONS,
                 read_ratio,
             );
 
-            // This lock hcan deadlock in the given benchmarks.
+            // This lock seems to deadlock.
             // benchmark_lock(
             //     c,
             //     "widerwlock::WideRwLock",
@@ -176,7 +187,7 @@ pub fn benchmark_sharedmutexes(c: &mut Criterion) {
             //         shared.write();
             //     },
             //     num_threads,
-            //     num_iterations,
+            //     NUM_ITERATIONS,
             //     read_ratio,
             // );
 
@@ -191,7 +202,7 @@ pub fn benchmark_sharedmutexes(c: &mut Criterion) {
                     let _guard = shared.write();
                 },
                 num_threads,
-                num_iterations,
+                NUM_ITERATIONS,
                 read_ratio,
             );
 
@@ -206,7 +217,7 @@ pub fn benchmark_sharedmutexes(c: &mut Criterion) {
                     shared.update();
                 },
                 num_threads,
-                num_iterations,
+                NUM_ITERATIONS,
                 read_ratio,
             );
 
@@ -221,7 +232,7 @@ pub fn benchmark_sharedmutexes(c: &mut Criterion) {
                     let _guard = shared.write();
                 },
                 num_threads,
-                num_iterations,
+                NUM_ITERATIONS,
                 read_ratio,
             );
 
@@ -236,23 +247,23 @@ pub fn benchmark_sharedmutexes(c: &mut Criterion) {
                     let _guard = shared.write().unwrap();
                 },
                 num_threads,
-                num_iterations,
+                NUM_ITERATIONS,
                 read_ratio,
             );
 
-            // This library only works on linux.
-            #[cfg(target_os = "linux")]
-            benchmark_lock(c,
-                "process_sync::SharedMemoryObject",
-                Arc::new(process_sync::SharedMemoryObject::new(())),
-                |shared| {
-                    shared.get().unwrap();
-                }, |shared| {
-                    shared.get_mut();
-                },
-                num_threads,
-                num_iterations,
-                read_ratio);
+            // This library might work on linux, but even there it does seem to have a weird API.
+            // #[cfg(target_os = "linux")]
+            // benchmark_lock(c,
+            //     "process_sync::SharedMemoryObject",
+            //     Arc::new(process_sync::SharedMemoryObject::new(5).unwrap()),
+            //     |shared| {
+            //         shared.get();
+            //     }, |shared| {
+            //         shared.get_mut();
+            //     },
+            //     num_threads,
+            //     NUM_ITERATIONS,
+            //     read_ratio);
         }
     }
 }

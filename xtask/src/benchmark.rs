@@ -2,7 +2,6 @@ use std::{error::Error, path::{Path, PathBuf}, io::Write, fs::{self, File}, coll
 
 use regex::Regex;
 use serde::Deserialize;
-use serde_json;
 use duct::cmd;
 use indoc::indoc;
 
@@ -22,7 +21,7 @@ struct CriterionJSON {
 
 /// Sanitize a string such that it can be rendered by pdflatex
 fn sanitize_str(str: String) -> String {
-    return str.replace("_", r"\_");
+    str.replace('_', r"\_")
 }
 
 pub fn benchmark() -> Result<(), Box<dyn Error>> {
@@ -105,8 +104,8 @@ pub fn benchmark() -> Result<(), Box<dyn Error>> {
 
     // Figure out the tables from the read_ratio.
     let mut read_ratios = Vec::new();
-    for (_, result) in &benchmarks {
-        for (read_ratio, _) in result {
+    for result in benchmarks.values() {
+        for read_ratio in result.keys() {
             if !read_ratios.contains(&read_ratio) {
                 read_ratios.push(read_ratio);
             }
@@ -114,8 +113,8 @@ pub fn benchmark() -> Result<(), Box<dyn Error>> {
     }
     
     let mut threads = Vec::new();
-    for (_, result) in &benchmarks {
-        for (_, timing) in result {
+    for result in benchmarks.values() {
+        for timing in result.values() {
             for (num_threads, _) in timing {
                 if !threads.contains(&num_threads) {
                     threads.push(num_threads);
@@ -146,7 +145,7 @@ pub fn benchmark() -> Result<(), Box<dyn Error>> {
                     continue;
                 }
 
-                for (num_threads, time) in timing {
+                for (_, time) in timing {
                     // threads should have at least this amount of threads so unwrap is safe.
                     write!(&mut file, " & {:.2}", time)?;
                 }

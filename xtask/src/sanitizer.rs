@@ -35,7 +35,7 @@ pub fn address_sanitizer(cargo_arguments: Vec<String>) -> Result<(), Box<dyn Err
     ];
 
     add_target_flag(&mut arguments);
-    arguments.extend(cargo_arguments.into_iter());
+    arguments.extend(cargo_arguments);
 
     cmd("cargo", arguments)
         .env("CARGO_INCREMENTAL", "0")
@@ -58,7 +58,7 @@ pub fn thread_sanitizer(cargo_arguments: Vec<String>) -> Result<(), Box<dyn Erro
     ];
 
     add_target_flag(&mut arguments);
-    arguments.extend(cargo_arguments.into_iter());
+    arguments.extend(cargo_arguments);
 
     cmd("cargo", arguments)
         .env("CARGO_INCREMENTAL", "0")
