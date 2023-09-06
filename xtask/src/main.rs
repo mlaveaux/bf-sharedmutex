@@ -2,6 +2,7 @@ use std::{env, error::Error};
 
 mod sanitizer;
 mod benchmark;
+mod coverage;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let mut args = env::args();
@@ -16,9 +17,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         Some("benchmark") => {
             benchmark::benchmark()?
         },
-        Some("sanitizer") => {
+        Some("coverage") => {
+            coverage::coverage()?
+        },
+        Some("address-sanitizer") => {
             sanitizer::address_sanitizer(args.collect())?
-        }
+        },
+        Some("thread-sanitizer") => {
+            sanitizer::thread_sanitizer(args.collect())?
+        },
         Some(x) => {
             println!("Unknown task {}", x);
         }

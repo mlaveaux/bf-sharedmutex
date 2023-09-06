@@ -1,10 +1,12 @@
-use std::{error::Error, path::{Path, PathBuf}, io::Write, fs::{self, File}, collections::HashMap, cmp::Ordering};
+use std::{error::Error, path::{Path, PathBuf}, io::Write, fs::{self, File}, collections::HashMap};
 
 use regex::Regex;
 use serde::Deserialize;
 use serde_json;
 use duct::cmd;
 use indoc::indoc;
+
+use iter_tools::Itertools;
 
 #[derive(Deserialize)]
 struct MeasurementJSON {
@@ -18,6 +20,11 @@ struct CriterionJSON {
     mean: MeasurementJSON
 }
 
+/// Sanitize a string such that it can be rendered by pdflatex
+fn sanitize_str(str: String) -> String {
+    return str.replace("_", r"\_");
+}
+
 pub fn benchmark() -> Result<(), Box<dyn Error>> {
 
     // Create a tmp directory
@@ -29,7 +36,7 @@ pub fn benchmark() -> Result<(), Box<dyn Error>> {
     // Either read the previous result or do the benchmarks and generate the output log.
     let mut output_path = PathBuf::new();
     output_path.push(tmp);
-    output_path.push("benchmark.log");
+    output_path.push("benchmark.json");
 
     let output = if !output_path.is_file() {
         // Run the benchmarks and capture the output
@@ -48,7 +55,7 @@ pub fn benchmark() -> Result<(), Box<dyn Error>> {
 
     let mut benchmarks = HashMap::<String, HashMap::<u64, Vec::<(u64, f64)>>>::new();
 
-    // Construct a Tikz image based on the data
+    // Take the benchmark data into memory
     for line in output.lines() {
         if let Ok(result) = serde_json::from_str::<CriterionJSON>(line) {
 
@@ -79,7 +86,8 @@ pub fn benchmark() -> Result<(), Box<dyn Error>> {
             }
         }
     }
-    
+
+    // Construct a table from the data.
     let mut latex_output = PathBuf::new();
     latex_output.push(tmp);
     latex_output.push("result.tex");
@@ -95,61 +103,126 @@ pub fn benchmark() -> Result<(), Box<dyn Error>> {
 
         \begin{{document}}"))?;
 
-    let bf_sharedmutex_results = benchmarks.get_mut("bf-sharedmutex::BfSharedMutex").unwrap().clone();
-
-    // Put the read ratio from high to low.
-    let mut results: Vec::<(u64, Vec::<(u64, f64)>)> = bf_sharedmutex_results.into_iter().collect();
-    results.sort_by(|x, y| {
-        if x.0 < y.0 {
-            Ordering::Less
-        } else {
-            Ordering::Equal
-        }
-    });
-
-    for (read_ratio, result) in results.iter_mut() {
-        
-        writeln!(&mut file, indoc!(r"
-        \begin{{figure}}
-        \begin{{tikzpicture}}
-        \begin{{axis}}[
-            xtick={{1,2,4,8,16,20}},
-            xmin = 1,
-            xmax = 20,
-            xlabel = {{threads}},
-            ymin = 0.9,
-            ylabel = {{read}},
-            ]"))?;
-
-        writeln!(&mut file, r"\addplot coordinates {{")?;
-
-        // Sort the results by number of threads.
-        result.sort_by(|x, y| {
-            if x.0 < y.0 {
-                Ordering::Less
-            } else {
-                Ordering::Equal
+    // Figure out the tables from the read_ratio.
+    let mut read_ratios = Vec::new();
+    for (_, result) in &benchmarks {
+        for (read_ratio, _) in result {
+            if !read_ratios.contains(&read_ratio) {
+                read_ratios.push(read_ratio);
             }
-        });
-        
-        // Derive the read percentage.
-        let read_percentage = 1.0 - 1.0 / *read_ratio as f64;
-
-        for (num_threads, time) in result {
-            writeln!(&mut file, "({}, {})", num_threads, time)?;
         }
-
-        writeln!(&mut file, indoc!(r"}};
-        
-        \end{{axis}}
-        \end{{tikzpicture}}
-        \caption{{Benchmark {} with read percentage {}}}
-        \end{{figure}}"), "BfSharedMutex", read_percentage)?;
+    }
+    
+    let mut threads = Vec::new();
+    for (_, result) in &benchmarks {
+        for (_, timing) in result {
+            for (num_threads, _) in timing {
+                if !threads.contains(&num_threads) {
+                    threads.push(num_threads);
+                }
+            }
+        }
     }
 
+    // Sort the tables
+    read_ratios.sort_unstable();
+    threads.sort_unstable();
 
-    writeln!(&mut file, indoc!(r"
-    \end{{document}}"))?;
+    println!("Read ratios: [{}]", read_ratios.iter().join(", "));
+    println!("Threads: [{}]", threads.iter().join(", "));
+
+    // Construct one table per ratio
+    for ratio in read_ratios {        
+        writeln!(&mut file, indoc!(r"
+            \begin{{table}}[h]        
+            \begin{{tabular}}{{r|r|r|r|r|r|r|r}}
+            name & 1 & 2 & 4 & 8 & 16 & 20 \\ \hline"))?;
+
+        for (name, result) in &benchmarks {
+            write!(&mut file, "{}", sanitize_str(name.clone()))?;
+
+            for (read_ratio, timing) in result {
+                if read_ratio != ratio {
+                    continue;
+                }
+
+                for (num_threads, time) in timing {
+                    // threads should have at least this amount of threads so unwrap is safe.
+                    write!(&mut file, " & {:.2}", time)?;
+                }
+            }
+
+            writeln!(&mut file, r" \\")?;
+        }
+
+        // Derive the read percentage.
+        let read_percentage = 1.0 - 1.0 / *ratio as f64;
+
+        writeln!(&mut file, indoc!(r"
+            \end{{tabular}}
+            \caption{{Timing benchmarks for number of threads in ms, with read percentage {}.}}
+            \end{{table}}"), read_percentage)?;
+        writeln!(&mut file)?;
+    }
+
+    writeln!(&mut file, r"\end{{document}}")?;
+    
+    // Construct Tikz images based on the data
+
+    // for (name, result) in benchmarks {
+
+    //     // Put the read ratio from high to low.
+    //     let mut results: Vec::<(u64, Vec::<(u64, f64)>)> = result.into_iter().collect();
+    //     results.sort_by(|x, y| {
+    //         if x.0 < y.0 {
+    //             Ordering::Less
+    //         } else {
+    //             Ordering::Equal
+    //         }
+    //     });
+
+    //     for (read_ratio, result) in results.iter_mut() {
+            
+    //         writeln!(&mut file, indoc!(r"
+    //         \begin{{figure}}
+    //         \begin{{tikzpicture}}
+    //         \begin{{axis}}[
+    //             xtick={{1,2,4,8,16,20}},
+    //             xmin = 1,
+    //             xmax = 20,
+    //             xlabel = {{threads}},
+    //             ymin = 0.9,
+    //             ylabel = {{read}},
+    //             ]"))?;
+
+    //         writeln!(&mut file, r"\addplot coordinates {{")?;
+
+    //         // Sort the results by number of threads.
+    //         result.sort_by(|x, y| {
+    //             if x.0 < y.0 {
+    //                 Ordering::Less
+    //             } else {
+    //                 Ordering::Equal
+    //             }
+    //         });
+            
+    //         // Derive the read percentage.
+    //         let read_percentage = 1.0 - 1.0 / *read_ratio as f64;
+
+    //         for (num_threads, time) in result {
+    //             writeln!(&mut file, "({}, {})", num_threads, time)?;
+    //         }
+
+    //         writeln!(&mut file, indoc!(r"}};
+            
+    //         \end{{axis}}
+    //         \end{{tikzpicture}}
+    //         \caption{{Benchmark {} with read percentage {}}}
+    //         \end{{figure}}"), sanitize_str(name.clone()), read_percentage)?;
+    //     }
+        
+    //     writeln!(&mut file)?;
+    // }
     
     Ok(())
 }

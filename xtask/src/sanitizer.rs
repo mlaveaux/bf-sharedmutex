@@ -45,3 +45,27 @@ pub fn address_sanitizer(cargo_arguments: Vec<String>) -> Result<(), Box<dyn Err
 
     Ok(())
 }
+
+///
+/// Run the tests with the thread sanitizer enabled to detect race conditions.
+///
+/// This only works under Linux and MacOS currently and requires the nightly toolchain.
+///
+pub fn thread_sanitizer(cargo_arguments: Vec<String>) -> Result<(), Box<dyn Error>> {
+    let mut arguments: Vec<String> = vec![
+        "test".to_string(),
+        "-Zbuild-std".to_string(),
+    ];
+
+    add_target_flag(&mut arguments);
+    arguments.extend(cargo_arguments.into_iter());
+
+    cmd("cargo", arguments)
+        .env("CARGO_INCREMENTAL", "0")
+        .env("RUSTFLAGS", "-Zsanitizer=thread")
+        .run()?;
+    println!("ok.");
+
+    Ok(())
+}
+

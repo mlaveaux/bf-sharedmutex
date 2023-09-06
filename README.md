@@ -4,7 +4,7 @@
 Benchmarking various implementations of readers-writer locks, `std::sync::RwLock`, `parking_lot::RwLock`, `tokio::sync::RwLock`.
 
 ```
-cargo bench --message-format=json > output.json
+cargo criterion --message-format=json > tmp/benchmark.json
 ```
 
 We compare several different Rust implementations of readers-writer locks.
