@@ -119,8 +119,6 @@ pub fn benchmark_sharedmutexes(c: &mut Criterion) {
                 read_ratio,
             );
 
-            continue;
-
             benchmark_lock(
                 c,
                 "std::sync::RwLock",
@@ -166,20 +164,21 @@ pub fn benchmark_sharedmutexes(c: &mut Criterion) {
                 read_ratio,
             );
 
-            benchmark_lock(
-                c,
-                "widerwlock::WideRwLock",
-                Arc::new(widerwlock::WideRwLock::new(())),
-                |shared| {
-                    shared.read();
-                },
-                |shared| {
-                    shared.write();
-                },
-                num_threads,
-                num_iterations,
-                read_ratio,
-            );
+            // This lock hcan deadlock in the given benchmarks.
+            // benchmark_lock(
+            //     c,
+            //     "widerwlock::WideRwLock",
+            //     Arc::new(widerwlock::WideRwLock::new(())),
+            //     |shared| {
+            //         shared.read();
+            //     },
+            //     |shared| {
+            //         shared.write();
+            //     },
+            //     num_threads,
+            //     num_iterations,
+            //     read_ratio,
+            // );
 
             benchmark_lock(
                 c,
