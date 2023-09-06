@@ -3,10 +3,10 @@ use std::{
 };
 
 #[cfg(not(loom))]
-use std::{sync::{Mutex, MutexGuard}, sync::atomic::fence, cell::UnsafeCell};
+use std::{sync::{Mutex, MutexGuard},  cell::UnsafeCell};
 
 #[cfg(loom)]
-use loom::{sync::{Mutex, MutexGuard}, sync::atomic::fence, cell::UnsafeCell};
+use loom::{sync::{Mutex, MutexGuard}, cell::UnsafeCell};
 
 /// A shared mutex (readers-writer lock) implementation based on the so-called
 /// busy-forbidden protocol. Instead of a regular Mutex this class is Send and
@@ -141,6 +141,8 @@ impl<'a, T> Drop for BfSharedMutexWriteGuard<'a, T> {
         for control in self.guard.iter().flatten() {
             control.forbidden.store(false, std::sync::atomic::Ordering::SeqCst);
         }
+
+        // The mutex guard is then dropped here.
     }
 }
 
@@ -187,7 +189,6 @@ impl<T> BfSharedMutex<T> {
         debug_assert!(!self.control.busy.load(Ordering::SeqCst), "Cannot acquire read access again inside a reader section");
 
         self.control.busy.store(true, Ordering::SeqCst);
-        fence(Ordering::SeqCst);
         while self.control.forbidden.load(Ordering::SeqCst) {
             self.control.busy.store(false, Ordering::SeqCst);
     
