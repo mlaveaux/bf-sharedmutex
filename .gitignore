@@ -4,3 +4,6 @@
 # Rust related ignore
 /target
 /Cargo.lock
+
+# Ignore the tmp/ directory where we store benchmark results.
+tmp/

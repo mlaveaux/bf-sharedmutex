@@ -1,12 +1,12 @@
 use std::{
-    sync::{atomic::{AtomicBool, Ordering}, Arc, Condvar}, ops::{DerefMut, Deref}, fmt::Debug, error::Error,
+    sync::{atomic::{AtomicBool, Ordering}, Arc}, ops::{DerefMut, Deref}, fmt::Debug, error::Error,
 };
 
 #[cfg(not(loom))]
-use std::{sync::{Mutex, MutexGuard}, cell::UnsafeCell};
+use std::{sync::{Mutex, MutexGuard}, sync::atomic::fence, cell::UnsafeCell};
 
 #[cfg(loom)]
-use loom::{sync::{Mutex, MutexGuard}, cell::UnsafeCell};
+use loom::{sync::{Mutex, MutexGuard}, sync::atomic::fence, cell::UnsafeCell};
 
 /// A shared mutex (readers-writer lock) implementation based on the so-called
 /// busy-forbidden protocol. Instead of a regular Mutex this class is Send and
@@ -185,11 +185,17 @@ impl<T> BfSharedMutex<T> {
     #[must_use]
     #[inline]
     pub fn read<'a>(&'a self) -> Result<BfSharedMutexReadGuard<'a, T>, Box<dyn Error + 'a>> {
-        debug_assert!(!self.control.busy.load(Ordering::SeqCst), "Cannot acquire read() access twice");
+        debug_assert!(!self.control.busy.load(Ordering::SeqCst), "Cannot acquire read access again inside a reader section");
 
         self.control.busy.store(true, Ordering::SeqCst);
+        fence(Ordering::SeqCst);
         while self.control.forbidden.load(Ordering::SeqCst) {
-            self.wait_for_forbidden()?;
+            self.control.busy.store(false, Ordering::SeqCst);
+    
+            // Wait for the mutex of the writer.
+            let mut _guard = self.shared.other.lock()?;
+            
+            self.control.busy.store(true, Ordering::SeqCst);
         }
 
         // We now have immutable access to the object due to the protocol.
@@ -249,26 +255,13 @@ impl<T> BfSharedMutex<T> {
             guard: other,
         })
     }
-
-    /// Wait for the forbidden flag to become false.
-    fn wait_for_forbidden<'a>(&'a self) -> Result<(), Box<dyn Error + 'a>> {
-            
-        self.control.busy.store(false, Ordering::SeqCst);
-
-        // Wait for the mutex of the writer.
-        let mut _guard = self.shared.other.lock()?;
-        
-        self.control.busy.store(true, Ordering::SeqCst);
-
-        Ok(())
-    }
 }
 
 impl<T: Debug> Debug for BfSharedMutex<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         
-        f.debug_map().entry(&"busy", &self.control.busy.load(Ordering::Relaxed))
-        .entry(&"forbidden", &self.control.forbidden.load(Ordering::Relaxed))
+        f.debug_map().entry(&"busy", &self.control.busy.load(Ordering::SeqCst))
+        .entry(&"forbidden", &self.control.forbidden.load(Ordering::SeqCst))
         .entry(&"index", &self.index)
         .entry(&"len(other)", &self.shared.other.lock().unwrap().len())
         .finish()?;
@@ -276,8 +269,8 @@ impl<T: Debug> Debug for BfSharedMutex<T> {
         writeln!(f)?;
         writeln!(f, "other values: [")?;
         for control in self.shared.other.lock().unwrap().iter().flatten() {
-            f.debug_map().entry(&"busy", &control.busy.load(Ordering::Relaxed))
-            .entry(&"forbidden", &control.forbidden.load(Ordering::Relaxed))
+            f.debug_map().entry(&"busy", &control.busy.load(Ordering::SeqCst))
+            .entry(&"forbidden", &control.forbidden.load(Ordering::SeqCst))
             .finish()?;
             writeln!(f)?;
         }
