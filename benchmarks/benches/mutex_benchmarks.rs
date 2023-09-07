@@ -7,8 +7,14 @@ use std::{
 use criterion::Criterion;
 
 use bf_sharedmutex::BfSharedMutex;
-use rand::prelude::*;
+use rand::{prelude::*, distributions::Bernoulli};
 
+// Settings for the benchmarks.
+pub const NUM_ITERATIONS: usize = 100000;
+pub const THREADS: [usize; 6] = [1, 2, 4, 8, 16, 20];
+pub const READ_RATIOS: [u32; 5] = [10, 100, 1000, 10000, 100000];
+
+/// Execute the benchmarks for a given readers-writer lock implementation.
 pub fn benchmark_lock<T, R, W>(
     c: &mut Criterion,
     name: &str,
@@ -17,7 +23,7 @@ pub fn benchmark_lock<T, R, W>(
     write: W,
     num_threads: usize,
     num_iterations: usize,
-    read_ratio: usize,
+    read_ratio: u32,
 ) where
     T: Clone + Send + 'static,
     R: FnOnce(&T) -> () + Send + Copy + 'static,
@@ -26,14 +32,12 @@ pub fn benchmark_lock<T, R, W>(
     // Share threads to avoid overhead.
     let mut threads = vec![];
 
-    // Derive the read percentage.
-    let read_percentage = 1.0 - 1.0 / read_ratio as f64;
-
     #[derive(Clone)]
     struct ThreadInfo<T> {
         busy: Arc<AtomicBool>,
         begin_barrier: Arc<Barrier>,
         end_barrier: Arc<Barrier>,
+        dist: Bernoulli,
         shared: T,
     }
 
@@ -41,6 +45,7 @@ pub fn benchmark_lock<T, R, W>(
         busy: Arc::new(AtomicBool::new(true)),
         begin_barrier: Arc::new(Barrier::new(num_threads + 1)),
         end_barrier: Arc::new(Barrier::new(num_threads + 1)),
+        dist: Bernoulli::from_ratio(1, read_ratio).unwrap(),
         shared,
     };
 
@@ -57,14 +62,12 @@ pub fn benchmark_lock<T, R, W>(
                     break;
                 }
 
-                // We execute it a fixed number of times, but also for every criterion iteration to avoid spawning and destroying threads.
+                // We execute it a fixed number of times.
                 for _ in 0..num_iterations {
-                    if rng.gen_bool(read_percentage) {
-                        // Read a random index.
-                        black_box(read(&info.shared));
-                    } else {
-                        // Add a new vector element.
+                    if info.dist.sample(&mut rng) {
                         black_box(write(&info.shared));
+                    } else {
+                        black_box(read(&info.shared));
                     }
                 }
 
@@ -96,11 +99,6 @@ pub fn benchmark_lock<T, R, W>(
         thread.join().unwrap();
     }
 }
-
-// Settings for the benchmarks.
-const NUM_ITERATIONS: usize = 100000;
-const THREADS: [usize; 6] = [1, 2, 4, 8, 16, 20];
-const READ_RATIOS: [usize; 5] = [10, 100, 1000, 10000, 100000];
 
 /// Benchmark the bfsharedmutex implementation
 pub fn benchmark_bfsharedmutex(c: &mut Criterion) {
