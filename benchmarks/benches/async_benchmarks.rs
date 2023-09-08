@@ -9,7 +9,7 @@ use tokio::runtime::Runtime;
 // Settings for the benchmarks.
 pub const NUM_ITERATIONS: usize = 100000;
 pub const THREADS: [usize; 6] = [1, 2, 4, 8, 16, 20];
-pub const READ_RATIOS: [u32; 5] = [10, 100, 1000, 10000, 100000];
+pub const READ_RATIOS: [u32; 6] = [1, 10, 100, 1000, 10000, 100000];
 
 pub fn benchmark_async(c: &mut Criterion) {
     

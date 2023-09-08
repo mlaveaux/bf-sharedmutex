@@ -1,6 +1,6 @@
 use std::{
     hint::black_box,
-    sync::{atomic::AtomicBool, Arc, Barrier, RwLock},
+    sync::{atomic::AtomicBool, Arc, Barrier, RwLock, Mutex},
     thread::{self},
 };
 
@@ -12,7 +12,7 @@ use rand::{prelude::*, distributions::Bernoulli};
 // Settings for the benchmarks.
 pub const NUM_ITERATIONS: usize = 100000;
 pub const THREADS: [usize; 6] = [1, 2, 4, 8, 16, 20];
-pub const READ_RATIOS: [u32; 5] = [10, 100, 1000, 10000, 100000];
+pub const READ_RATIOS: [u32; 6] = [1, 10, 100, 1000, 10000, 100000];
 
 /// Execute the benchmarks for a given readers-writer lock implementation.
 pub fn benchmark_lock<T, R, W>(
@@ -128,6 +128,20 @@ pub fn benchmark_bfsharedmutex(c: &mut Criterion) {
 pub fn benchmark_othermutexes(c: &mut Criterion) {
     for num_threads in THREADS {
         for read_ratio in READ_RATIOS {
+            benchmark_lock(
+                c,
+                "std::sync::Mutex",
+                Arc::new(Mutex::new(())),
+                |_| {
+                },
+                |shared| {
+                    let _guard = shared.lock();
+                },
+                num_threads,
+                NUM_ITERATIONS,
+                read_ratio,
+            );
+
             benchmark_lock(
                 c,
                 "std::sync::RwLock",
