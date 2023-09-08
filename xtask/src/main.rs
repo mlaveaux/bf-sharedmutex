@@ -14,8 +14,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let task = args.next();
 
     match task.as_deref() {
-        Some("benchmark") => {
-            benchmark::benchmark()?
+        Some("convert-benchmark") => {
+            let json_path = args.next().expect("Expected .json argument for convert-benchmark task");
+            benchmark::benchmark_to_latex(json_path)?
         },
         Some("coverage") => {
             coverage::coverage()?

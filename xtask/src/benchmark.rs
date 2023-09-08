@@ -2,7 +2,6 @@ use std::{error::Error, path::{Path, PathBuf}, io::Write, fs::{self, File}, coll
 
 use regex::Regex;
 use serde::Deserialize;
-use duct::cmd;
 use indoc::indoc;
 
 use iter_tools::Itertools;
@@ -24,30 +23,11 @@ fn sanitize_str(str: String) -> String {
     str.replace('_', r"\_")
 }
 
-pub fn benchmark() -> Result<(), Box<dyn Error>> {
+pub fn benchmark_to_latex(path: String) -> Result<(), Box<dyn Error>> {
 
-    // Create a tmp directory
-    let tmp = Path::new("tmp/");
-    if !tmp.is_dir() {
-        fs::create_dir(tmp)?;
-    }
-
-    // Either read the previous result or do the benchmarks and generate the output log.
-    let mut output_path = PathBuf::new();
-    output_path.push(tmp);
-    output_path.push("benchmark.json");
-
-    let output = if !output_path.is_file() {
-        // Run the benchmarks and capture the output
-        let output = cmd!("cargo", "criterion", "--message-format=json").stdout_capture().read()?;
-    
-        // Write the JSON file for preservation
-        fs::write(output_path, &output)?;
-
-        output
-    } else {
-        fs::read_to_string(output_path)?
-    };
+    // Read the json file.
+    let path = Path::new(&path);
+    let output = fs::read_to_string(path)?;
 
     // The regex to extract the benchmark ID
     let name_re = Regex::new(r"(.*) ([0-9]*) ([0-9]*) ([0-9]*)")?;
@@ -87,9 +67,9 @@ pub fn benchmark() -> Result<(), Box<dyn Error>> {
     }
 
     // Construct a table from the data.
-    let mut latex_output = PathBuf::new();
-    latex_output.push(tmp);
-    latex_output.push("result.tex");
+    let mut latex_output = path.with_extension("tex");
+    
+    
     let mut file = File::create(latex_output).unwrap();
 
     writeln!(&mut file, indoc!(r"
