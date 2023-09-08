@@ -34,13 +34,15 @@ unsafe impl<T> Send for BfSharedMutex<T> {}
 #[derive(Default)]
 struct SharedMutexControl {
     busy: AtomicBool,
-    forbidden: AtomicBool,
 }
 
 struct SharedData<T> {
 
     /// The object that is being protected.
     object: UnsafeCell<T>,
+
+    // Indicates that threads must wait.
+    forbidden: AtomicBool,
 
     /// The list of all the shared mutex instances.
     other: Mutex<Vec<Option<Arc<CachePadded<SharedMutexControl>>>>>,
@@ -57,6 +59,7 @@ impl<T> BfSharedMutex<T> {
             shared: Arc::new(CachePadded::new(SharedData {
                 object: UnsafeCell::new(object),
                 other: Mutex::new(vec![Some(control.clone())]),
+                forbidden: AtomicBool::new(false),
             })),
             index: 0,
         }
@@ -140,9 +143,7 @@ impl<'a, T> Drop for BfSharedMutexWriteGuard<'a, T> {
     fn drop(&mut self) {
 
         // Allow other threads to acquire access to the shared mutex.
-        for control in self.guard.iter().flatten() {
-            control.forbidden.store(false, std::sync::atomic::Ordering::SeqCst);
-        }
+        self.mutex.shared.forbidden.store(false, std::sync::atomic::Ordering::SeqCst);
 
         // The mutex guard is then dropped here.
     }
@@ -191,7 +192,7 @@ impl<T> BfSharedMutex<T> {
         debug_assert!(!self.control.busy.load(Ordering::SeqCst), "Cannot acquire read access again inside a reader section");
 
         self.control.busy.store(true, Ordering::SeqCst);
-        while self.control.forbidden.load(Ordering::SeqCst) {
+        while self.shared.forbidden.load(Ordering::SeqCst) {
             self.control.busy.store(false, Ordering::SeqCst);
     
             // Wait for the mutex of the writer.
@@ -221,16 +222,11 @@ impl<T> BfSharedMutex<T> {
 
         debug_assert!(!self.control.busy.load(std::sync::atomic::Ordering::SeqCst), 
             "Can only exclusive lock outside of a shared lock, no upgrading!");
-        debug_assert!(!self.control.forbidden.load(std::sync::atomic::Ordering::SeqCst), 
+        debug_assert!(!self.shared.forbidden.load(std::sync::atomic::Ordering::SeqCst), 
             "Can not acquire exclusive lock inside of exclusive section");
 
         // Make all instances wait due to forbidden access.
-        for control in other.iter().flatten() {
-            debug_assert!(!control.forbidden.load(std::sync::atomic::Ordering::SeqCst), 
-                "Other instance is already forbidden, this cannot happen");
-
-            control.forbidden.store(true, std::sync::atomic::Ordering::SeqCst);
-        }
+        self.shared.forbidden.store(true, std::sync::atomic::Ordering::SeqCst);
 
         // Wait for the instances to exit their busy status.
         for (index, option) in other.iter().enumerate() {
@@ -269,7 +265,7 @@ impl<T: Debug> Debug for BfSharedMutex<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         
         f.debug_map().entry(&"busy", &self.control.busy.load(Ordering::SeqCst))
-        .entry(&"forbidden", &self.control.forbidden.load(Ordering::SeqCst))
+        .entry(&"forbidden", &self.shared.forbidden.load(Ordering::SeqCst))
         .entry(&"index", &self.index)
         .entry(&"len(other)", &self.shared.other.lock().unwrap().len())
         .finish()?;
@@ -278,7 +274,6 @@ impl<T: Debug> Debug for BfSharedMutex<T> {
         writeln!(f, "other values: [")?;
         for control in self.shared.other.lock().unwrap().iter().flatten() {
             f.debug_map().entry(&"busy", &control.busy.load(Ordering::SeqCst))
-            .entry(&"forbidden", &control.forbidden.load(Ordering::SeqCst))
             .finish()?;
             writeln!(f)?;
         }
@@ -292,7 +287,7 @@ impl<T: Debug> Debug for BfSharedMutex<T> {
 #[cfg(not(loom))]
 mod tests {
     use std::{thread, hint::black_box};
-    use rand::prelude::*;
+    use rand::{prelude::*, distributions::Bernoulli};
 
     use crate::bf_sharedmutex::BfSharedMutex;
 
@@ -347,6 +342,35 @@ mod tests {
                     } else {
                         // Add a new vector element.
                         shared_vector.write().unwrap().push(5);
+                    }
+                }
+             
+            }));
+        }
+
+        // Check whether threads have completed succesfully.
+        for thread in threads {
+            thread.join().unwrap();
+        }
+    }
+
+    /// This test can be used with a profiler to benchmark the efficiency of the lock.
+    #[test]
+    fn test_benchmark() {
+        let shared_vector = BfSharedMutex::new(());
+        let dist = Bernoulli::from_ratio(1, 100).unwrap();
+
+        let mut threads = vec![];
+        for _ in 0..20 {
+            let shared_vector = shared_vector.clone();
+            threads.push(thread::spawn(move || {
+                let mut rng = rand::thread_rng();  
+
+                for _ in 0..4000000 {
+                    if dist.sample(&mut rng) {
+                        let _guard = shared_vector.write().unwrap();
+                    } else {
+                        let _guard = shared_vector.read().unwrap();
                     }
                 }
              
