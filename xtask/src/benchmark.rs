@@ -1,4 +1,4 @@
-use std::{error::Error, path::{Path, PathBuf}, io::Write, fs::{self, File}, collections::HashMap};
+use std::{error::Error, path::Path, io::Write, fs::{self, File}, collections::HashMap};
 
 use regex::Regex;
 use serde::Deserialize;
@@ -67,8 +67,7 @@ pub fn benchmark_to_latex(path: String) -> Result<(), Box<dyn Error>> {
     }
 
     // Construct a table from the data.
-    let mut latex_output = path.with_extension("tex");
-    
+    let latex_output = path.with_extension("tex");
     
     let mut file = File::create(latex_output).unwrap();
 
@@ -114,7 +113,7 @@ pub fn benchmark_to_latex(path: String) -> Result<(), Box<dyn Error>> {
     for ratio in read_ratios {        
         writeln!(&mut file, indoc!(r"
             \begin{{table}}[h]        
-            \begin{{tabular}}{{r|r|r|r|r|r|r|r}}
+            \begin{{tabular}}{{r|r|r|r|r|r|r}}
             name & 1 & 2 & 4 & 8 & 16 & 20 \\ \hline"))?;
 
         for (name, result) in &benchmarks {
