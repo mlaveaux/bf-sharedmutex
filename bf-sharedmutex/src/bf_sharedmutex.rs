@@ -294,12 +294,15 @@ mod tests {
         let mut threads = vec![];
 
         let shared_number = BfSharedMutex::new(5);
-        let iterations = 5000;
+        let num_threads = 20;
+        let num_iterations = 500;
 
-        for _ in 1..iterations {
+        for _ in 0..num_threads {
             let shared_number = shared_number.clone();
             threads.push(thread::spawn(move || {
-                *shared_number.write().unwrap() += 5;                
+                for _ in 0..num_iterations {
+                    *shared_number.write().unwrap() += 5;    
+                }            
             }));
         }
 
@@ -308,7 +311,7 @@ mod tests {
             thread.join().unwrap();
         }
 
-        assert_eq!(*shared_number.write().unwrap(), iterations*5);
+        assert_eq!(*shared_number.write().unwrap(), num_threads * num_iterations * 5 + 5);
     }
 
     #[test]
@@ -316,12 +319,15 @@ mod tests {
         let shared_vector = BfSharedMutex::new(vec![]);
 
         let mut threads = vec![];
-        for _ in 1..20 {
+        let num_threads = 20;
+        let num_iterations = 5000;
+
+        for _ in 1..num_threads {
             let shared_vector = shared_vector.clone();
             threads.push(thread::spawn(move || {
                 let mut rng = rand::thread_rng();  
 
-                for _ in 0..100000 {
+                for _ in 0..num_iterations {
                     if rng.gen_bool(0.95) {
                         // Read a random index.
                         let read = shared_vector.read().unwrap();
