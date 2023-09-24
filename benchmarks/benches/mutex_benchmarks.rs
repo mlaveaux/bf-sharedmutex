@@ -127,20 +127,21 @@ pub fn benchmark_bfsharedmutex(c: &mut Criterion) {
 // Split up to first do our own benchmarks since than we can update the implementation easily.   
 pub fn benchmark_othermutexes(c: &mut Criterion) {
     for num_threads in THREADS {
+        benchmark_lock(
+            c,
+            "std::sync::Mutex",
+            Arc::new(Mutex::new(())),
+            |_| {
+            },
+            |shared| {
+                let _guard = shared.lock();
+            },
+            num_threads,
+            NUM_ITERATIONS,
+            1,
+        );
+
         for read_ratio in READ_RATIOS {
-            benchmark_lock(
-                c,
-                "std::sync::Mutex",
-                Arc::new(Mutex::new(())),
-                |_| {
-                },
-                |shared| {
-                    let _guard = shared.lock();
-                },
-                num_threads,
-                NUM_ITERATIONS,
-                read_ratio,
-            );
 
             benchmark_lock(
                 c,
