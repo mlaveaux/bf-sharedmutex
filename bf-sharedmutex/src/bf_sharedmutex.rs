@@ -8,6 +8,8 @@ use std::{sync::{Mutex, MutexGuard},  cell::UnsafeCell};
 #[cfg(loom)]
 use loom::{sync::{Mutex, MutexGuard}, cell::UnsafeCell};
 
+use crossbeam::utils::CachePadded;
+
 /// A shared mutex (readers-writer lock) implementation based on the so-called
 /// busy-forbidden protocol. Instead of a regular Mutex this class is Send and
 /// not Sync, every thread must acquire a clone of the shared mutex and the
@@ -16,13 +18,13 @@ use loom::{sync::{Mutex, MutexGuard}, cell::UnsafeCell};
 /// given object.
 pub struct BfSharedMutex<T> {
     /// The local control bits of each instance. TODO: Maybe use pin to share the control bits among shared mutexes.
-    control: Arc<SharedMutexControl>,
+    control: Arc<CachePadded<SharedMutexControl>>,
 
     /// Index into the `other` table.
     index: usize,
 
     /// Information shared between all clones.
-    shared: Arc<SharedData<T>>,
+    shared: Arc<CachePadded<SharedData<T>>>,
 }
 
 // Can only be send, but is not sync
@@ -41,21 +43,21 @@ struct SharedData<T> {
     object: UnsafeCell<T>,
 
     /// The list of all the shared mutex instances.
-    other: Mutex<Vec<Option<Arc<SharedMutexControl>>>>,
+    other: Mutex<Vec<Option<Arc<CachePadded<SharedMutexControl>>>>>,
 }
 
 impl<T> BfSharedMutex<T> {
 
     /// Constructs a new shared mutex for protecting access to the given object.
     pub fn new(object: T) -> Self {
-        let control = Arc::new(SharedMutexControl::default());
+        let control = Arc::new(CachePadded::new(SharedMutexControl::default()));
 
         Self {
             control: control.clone(),
-            shared: Arc::new(SharedData {
+            shared: Arc::new(CachePadded::new(SharedData {
                 object: UnsafeCell::new(object),
                 other: Mutex::new(vec![Some(control.clone())]),
-            }),
+            })),
             index: 0,
         }
     }
@@ -65,7 +67,7 @@ impl<T> Clone for BfSharedMutex<T> {
     fn clone(&self) -> Self {
 
         // Register a new instance in the other list.
-        let control = Arc::new(SharedMutexControl::default());
+        let control = Arc::new(CachePadded::new(SharedMutexControl::default()));
 
         let mut other = self.shared.other.lock().expect("Failed to lock mutex");
         other.push(Some(control.clone()));
@@ -91,7 +93,7 @@ impl<T> Drop for BfSharedMutex<T> {
 #[must_use = "Dropping the guard unlocks the shared mutex immediately"]
 pub struct BfSharedMutexWriteGuard<'a, T> {
     mutex: &'a BfSharedMutex<T>,
-    guard: MutexGuard<'a, Vec<Option<Arc<SharedMutexControl>>>>,
+    guard: MutexGuard<'a, Vec<Option<Arc<CachePadded<SharedMutexControl>>>>>,
 
     #[cfg(loom)]
     access: loom::cell::MutPtr<T>,
