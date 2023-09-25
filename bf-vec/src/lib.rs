@@ -87,6 +87,10 @@ impl<T> BfVec<T> {
                 new_buffer,
                 write.len.load(Ordering::Relaxed),
             );
+            
+
+            // Clean up the old buffer.
+            alloc::dealloc(write.buffer as *mut u8, layout);
 
             write.capacity = capacity;
             write.buffer = new_buffer;
@@ -97,20 +101,19 @@ impl<T> BfVec<T> {
 impl<T> Drop for BfVecShared<T> {
     fn drop(&mut self) {
 
-        // If drop panics make sure that we are in a valid state, leaks memory.
-        let length = self.len.load(Ordering::Relaxed);
-        self.len.store(0, Ordering::Relaxed);
-
         unsafe {
             // Only drop items within the 0..len range since the other values are not initialised.
-            for i in 0..length {
+            for i in 0..self.len.load(Ordering::Relaxed) {
                 let ptr = self.buffer.add(i);
 
                 ptr::drop_in_place(ptr);
             }
 
-            // Drop the storage itself.
-            ptr::drop_in_place(self.buffer);
+            let layout =
+                Layout::from_size_align(self.capacity, mem::align_of::<T>()).expect("Bad layout");
+
+            // Deallocate the storage itself.
+            alloc::dealloc(self.buffer as *mut u8, layout);
         }
     }
 }
