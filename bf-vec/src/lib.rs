@@ -94,10 +94,24 @@ impl<T> BfVec<T> {
     }
 }
 
-impl<T> Drop for BfVec<T> {
+impl<T> Drop for BfVecShared<T> {
     fn drop(&mut self) {
-        // Only drop items within the 0..len range since the other values are not initialised.
 
+        // If drop panics make sure that we are in a valid state, leaks memory.
+        let length = self.len.load(Ordering::Relaxed);
+        self.len.store(0, Ordering::Relaxed);
+
+        unsafe {
+            // Only drop items within the 0..len range since the other values are not initialised.
+            for i in 0..length {
+                let ptr = self.buffer.add(i);
+
+                ptr::drop_in_place(ptr);
+            }
+
+            // Drop the storage itself.
+            ptr::drop_in_place(self.buffer);
+        }
     }
 }
 
