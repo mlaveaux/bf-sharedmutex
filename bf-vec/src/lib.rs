@@ -72,6 +72,10 @@ impl<T> BfVec<T> {
         self.shared.read().unwrap().len.load(Ordering::Relaxed)
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Allocate the vector to be twice as long.
     fn reserve(&self, capacity: usize) {
         let mut write = self.shared.write().unwrap();
@@ -95,6 +99,12 @@ impl<T> BfVec<T> {
             write.capacity = capacity;
             write.buffer = new_buffer;
         }
+    }
+}
+
+impl<T> Default for BfVec<T> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

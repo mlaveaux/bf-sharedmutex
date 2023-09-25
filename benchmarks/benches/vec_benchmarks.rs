@@ -1,6 +1,6 @@
 use std::{
     hint::black_box,
-    sync::{atomic::AtomicBool, Arc, Barrier, RwLock, Mutex},
+    sync::{atomic::AtomicBool, Arc, Barrier},
     thread::{self},
 };
 
@@ -135,7 +135,7 @@ pub fn benchmark_vector(c: &mut Criterion) {
                     black_box(x.vector.push(1));
                 },
                 num_threads,
-                10000,
+                NUM_ITERATIONS,
                 read_ratio);
         }
     }
