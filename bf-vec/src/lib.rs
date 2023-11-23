@@ -1,4 +1,5 @@
-use std::{alloc::Layout, mem, ptr, sync::atomic::AtomicUsize};
+use std::cmp::max;
+use std::{alloc::Layout, ptr, sync::atomic::AtomicUsize};
 use std::sync::atomic::Ordering;
 
 use bf_sharedmutex::BfSharedMutex;
@@ -18,45 +19,36 @@ pub struct BfVec<T> {
 }
 
 impl<T> BfVec<T> {
-    /// Create a new vector with 8 initial capacity.
+    /// Create a new vector with zero capacity.
     pub fn new() -> BfVec<T> { 
-
-        let initial_size = 8;
-
-        let layout =
-            Layout::from_size_align(initial_size, mem::align_of::<T>()).expect("Bad layout");
-
-        let new_buffer = unsafe {
-            alloc::alloc(layout) as *mut T
-        };
 
         BfVec {
             shared: BfSharedMutex::new(BfVecShared {
-                buffer: new_buffer,
-                capacity: initial_size,
+                buffer: ptr::null_mut(),
+                capacity: 0,
                 len: AtomicUsize::new(0),
             }),
         }
     }
 
     pub fn push(&self, value: T) {
-        let read = self.shared.read().unwrap();
+        let mut read = self.shared.read().unwrap();
         
-        // Insert the element and update the length.
-        unsafe {
-            let end = read.buffer.add(read.len.load(Ordering::Relaxed));
-            ptr::write(end, value);
-        }
+        // Reserve an index for the new element.
+        let last_index = read.len.fetch_add(1, std::sync::atomic::Ordering::Release);
 
-        read.len.fetch_add(1, std::sync::atomic::Ordering::Release);
-
-        // Vector needs to be resized. We do this prematurely because otherwise
-        // we would need to upgrade the read into a write lock, or acquire read
-        // access twice.
-        if read.len.load(std::sync::atomic::Ordering::Acquire) == read.capacity {
-            let new_capacity = read.capacity * 2;
+        // Vector needs to be resized.
+        if last_index >= read.capacity {
+            let new_capacity = max(read.capacity * 2, 8);
             drop(read);
             self.reserve(new_capacity);
+            read = self.shared.read().unwrap();
+        }
+
+        // Write the element on the specified index.
+        unsafe {
+            let end = read.buffer.add(last_index);
+            ptr::write(end, value);
         }
     }
 
@@ -76,25 +68,40 @@ impl<T> BfVec<T> {
         self.len() == 0
     }
 
-    /// Allocate the vector to be twice as long.
+    /// Drops the elements in the Vec, but keeps the capacity.
+    pub fn clear(&self) {
+        let mut write = self.shared.write().unwrap();
+        write.clear();
+    }
+
+    /// Reserve the given capacity.
     fn reserve(&self, capacity: usize) {
         let mut write = self.shared.write().unwrap();
 
-        let layout =
-            Layout::from_size_align(capacity, mem::align_of::<T>()).expect("Bad layout");
+        // A reserve could have happened in the meantime which makes this call obsolete
+        if capacity <= write.capacity {
+            return;
+        }
+
+        let old_layout = Layout::array::<T>(write.capacity).unwrap();
+        let layout = Layout::array::<T>(capacity).unwrap();
 
         unsafe {
-            let new_buffer = alloc::alloc(layout) as *mut T;
+            let new_buffer = alloc::alloc(layout) as *mut T;            
+            if new_buffer.is_null() {
+                alloc::handle_alloc_error(layout); 
+            }
 
-            ptr::copy_nonoverlapping(
-                write.buffer,
-                new_buffer,
-                write.len.load(Ordering::Relaxed),
-            );
-            
-
-            // Clean up the old buffer.
-            alloc::dealloc(write.buffer as *mut u8, layout);
+            if !write.buffer.is_null() {
+                ptr::copy_nonoverlapping(
+                    write.buffer,
+                    new_buffer,
+                    write.len.load(Ordering::Relaxed),
+                );            
+    
+                // Clean up the old buffer.
+                alloc::dealloc(write.buffer as *mut u8, old_layout);
+            }
 
             write.capacity = capacity;
             write.buffer = new_buffer;
@@ -108,21 +115,29 @@ impl<T> Default for BfVec<T> {
     }
 }
 
-impl<T> Drop for BfVecShared<T> {
-    fn drop(&mut self) {
 
-        unsafe {
-            // Only drop items within the 0..len range since the other values are not initialised.
-            for i in 0..self.len.load(Ordering::Relaxed) {
+impl<T> BfVecShared<T> {
+     
+    pub fn clear(&mut self) {
+        // Only drop items within the 0..len range since the other values are not initialised.
+        for i in 0..self.len.load(Ordering::Relaxed) {
+            unsafe {
+                // We have exclusive access so dropping is safe.
                 let ptr = self.buffer.add(i);
 
                 ptr::drop_in_place(ptr);
             }
+        }
+    }
+}
 
-            let layout =
-                Layout::from_size_align(self.capacity, mem::align_of::<T>()).expect("Bad layout");
+impl<T> Drop for BfVecShared<T> {
+    fn drop(&mut self) {
+        self.clear();
 
-            // Deallocate the storage itself.
+        unsafe {
+            // Deallocate the underlying storage.
+            let layout = Layout::array::<T>(self.capacity).unwrap();
             alloc::dealloc(self.buffer as *mut u8, layout);
         }
     }
@@ -142,15 +157,15 @@ mod tests {
     fn test_push() {
         let mut threads = vec![];
 
-        let shared_vector = BfVec::<()>::new();
-        let num_threads = 20;
-        let num_iterations = 5000;
+        let shared_vector = BfVec::<u32>::new();
+        let num_threads = 10;
+        let num_iterations = 100000;
 
         for _ in 0..num_threads {
             let shared_vector = shared_vector.share();
             threads.push(thread::spawn(move || {
                 for _ in 0..num_iterations {
-                    shared_vector.push(());
+                    shared_vector.push(1);
                 }
             }));
         }
