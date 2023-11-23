@@ -28,6 +28,6 @@ jobs:
         submodules: true
 
     - name: Run Benchmarks
-      run: cargo bench
+      run: cargo bench --no-run
       env:
         RUSTC_WRAPPER: sccache
