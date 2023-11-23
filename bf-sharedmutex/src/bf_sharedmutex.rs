@@ -256,6 +256,13 @@ impl<T> BfSharedMutex<T> {
             guard: other,
         })
     }
+
+    /// Obtain mutable access to the object without locking, is safe because we have mutable access.
+    pub fn get_mut(&mut self) -> &mut T {
+        unsafe {
+            &mut *self.shared.object.get()
+        }
+    }
 }
 
 impl<T: Debug> Debug for BfSharedMutex<T> {
