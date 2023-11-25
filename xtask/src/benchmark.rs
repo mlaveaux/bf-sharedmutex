@@ -4,7 +4,7 @@ use regex::Regex;
 use serde::Deserialize;
 use indoc::indoc;
 
-use iter_tools::Itertools;
+use itertools::Itertools;
 
 #[derive(Deserialize)]
 struct MeasurementJSON {
