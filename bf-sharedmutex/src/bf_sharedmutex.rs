@@ -1,5 +1,5 @@
 use std::{
-    sync::{atomic::{AtomicBool, Ordering}, Arc}, ops::{DerefMut, Deref}, fmt::Debug, error::Error,
+    error::Error, fmt::Debug, ops::{Deref, DerefMut}, sync::{atomic::{fence, AtomicBool, Ordering}, Arc}
 };
 
 #[cfg(not(loom))]
@@ -191,6 +191,8 @@ impl<T> BfSharedMutex<T> {
         debug_assert!(!self.control.busy.load(Ordering::SeqCst), "Cannot acquire read access again inside a reader section");
 
         self.control.busy.store(true, Ordering::SeqCst);
+        #[cfg(loom)]
+        fence(Ordering::SeqCst);
         while self.control.forbidden.load(Ordering::SeqCst) {
             self.control.busy.store(false, Ordering::SeqCst);
     
@@ -258,6 +260,7 @@ impl<T> BfSharedMutex<T> {
     }
 
     /// Obtain mutable access to the object without locking, is safe because we have mutable access.
+    #[cfg(not(loom))]
     pub fn get_mut(&mut self) -> &mut T {
         unsafe {
             &mut *self.shared.object.get()
