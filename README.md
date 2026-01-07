@@ -1,4 +1,6 @@
 
+ >  ⚠️ **important** This repository is archived, and its development is continued in the [merc](https://github.com/MERCorg/merc) repository.
+ 
 # benchmarking
 
 Benchmarking various implementations of readers-writer locks, `std::sync::RwLock`, `parking_lot::RwLock`, `tokio::sync::RwLock`.
